@@ -27,6 +27,7 @@ import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 public final class ImagePreviews {
@@ -44,6 +45,7 @@ public final class ImagePreviews {
                         t.setDaemon(true);
                         return t;
                     });
+    private static final AtomicBoolean CLEAR_REQUESTED = new AtomicBoolean();
     private static final PreviewCache CACHE =
             new PreviewCache(
                     DOWNLOADS,
@@ -73,10 +75,13 @@ public final class ImagePreviews {
                                                                     clear();
                                                                     return 1;
                                                                 }))));
+        // Disconnect fires on the network thread, and the client drops queued tasks while it
+        // disconnects. Previews and their textures belong to the render thread, so the next
+        // client tick clears them.
         ClientPlayConnectionEvents.DISCONNECT.register(
                 (handler, client) -> {
-                    clear();
                     BridgeMedia.clear();
+                    CLEAR_REQUESTED.set(true);
                 });
         ClientTickEvents.END_CLIENT_TICK.register(client -> maintain());
         ClientLifecycleEvents.CLIENT_STOPPING.register(
@@ -241,6 +246,7 @@ public final class ImagePreviews {
     }
 
     private static void maintain() {
+        if (CLEAR_REQUESTED.getAndSet(false)) clear();
         if (!ImagePreviewSettings.enabled()) {
             clear();
             BridgeMedia.clear();
