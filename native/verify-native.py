@@ -48,15 +48,20 @@ def decode(scratch, data, delay=0.0):
     """Runs one decode; with a delay the helper first sets up and sandboxes itself."""
     process = subprocess.Popen(command(scratch), stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    confined = None
-    if delay:
-        time.sleep(delay)
-        assert process.poll() is None, ("helper exited while waiting for input",
-                                        process.stderr.read().decode(errors="replace"))
-        if not windows:
-            confined = confinement(process.pid)
-    out, err = process.communicate(struct.pack(">I", len(data)) + data, timeout=40)
-    return process.returncode, out, err.decode(errors="replace"), confined
+    try:
+        confined = None
+        if delay:
+            time.sleep(delay)
+            assert process.poll() is None, ("helper exited while waiting for input",
+                                            process.stderr.read().decode(errors="replace"))
+            if not windows:
+                confined = confinement(process.pid)
+        out, err = process.communicate(struct.pack(">I", len(data)) + data, timeout=40)
+        return process.returncode, out, err.decode(errors="replace"), confined
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
 
 
 report = {"platform": name, "helper_dir": str(helper_dir)}

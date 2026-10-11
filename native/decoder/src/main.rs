@@ -354,7 +354,11 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Image could not be decoded within safety limits: {error}");
+            // The caller may already have closed stderr; that must not turn into a panic.
+            let _ = writeln!(
+                std::io::stderr(),
+                "Image could not be decoded within safety limits: {error}"
+            );
             ExitCode::FAILURE
         }
     }
