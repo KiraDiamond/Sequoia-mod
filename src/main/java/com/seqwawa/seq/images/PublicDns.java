@@ -3,14 +3,81 @@ package com.seqwawa.seq.images;
 import org.apache.hc.client5.http.DnsResolver;
 
 import java.net.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
+/** Resolves allowlisted media hosts to public addresses only, within the download deadline. */
 final class PublicDns implements DnsResolver {
+    // The OS resolver cannot be interrupted. A stalled lookup keeps its thread until the OS
+    // gives up, so lookups share two threads and fail fast when both are stuck.
+    private static final ThreadPoolExecutor LOOKUPS =
+            new ThreadPoolExecutor(
+                    2,
+                    2,
+                    30,
+                    TimeUnit.SECONDS,
+                    new ArrayBlockingQueue<>(4),
+                    r -> {
+                        var thread = new Thread(r, "Sequoia media DNS");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+
+    static {
+        LOOKUPS.allowCoreThreadTimeOut(true);
+    }
+
+    @FunctionalInterface
+    interface Lookup {
+        InetAddress[] resolve(String host) throws UnknownHostException;
+    }
+
+    private final long deadline;
+    private final Lookup lookup;
+
+    PublicDns(long deadline) {
+        this(deadline, InetAddress::getAllByName);
+    }
+
+    PublicDns(long deadline, Lookup lookup) {
+        this.deadline = deadline;
+        this.lookup = lookup;
+    }
+
+    @Override
     public InetAddress[] resolve(String host) throws UnknownHostException {
         if (!MediaLinks.allowed(URI.create("https://" + host + "/")))
             throw new UnknownHostException("Unsupported media host");
-        return checked(InetAddress.getAllByName(host));
+        Future<InetAddress[]> pending;
+        try {
+            pending = LOOKUPS.submit(() -> lookup.resolve(host));
+        } catch (RejectedExecutionException busy) {
+            throw new UnknownHostException("Media host lookup unavailable");
+        }
+        try {
+            long remaining = Math.max(0, deadline - System.nanoTime());
+            return checked(pending.get(remaining, TimeUnit.NANOSECONDS));
+        } catch (TimeoutException late) {
+            pending.cancel(true);
+            throw new UnknownHostException("Media host lookup timed out");
+        } catch (InterruptedException interrupted) {
+            pending.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new UnknownHostException("Media host lookup cancelled");
+        } catch (ExecutionException failed) {
+            if (failed.getCause() instanceof UnknownHostException unknown) throw unknown;
+            var wrapped = new UnknownHostException("Media host lookup failed");
+            wrapped.initCause(failed.getCause());
+            throw wrapped;
+        }
     }
 
+    @Override
     public String resolveCanonicalHostname(String host) {
         return host;
     }

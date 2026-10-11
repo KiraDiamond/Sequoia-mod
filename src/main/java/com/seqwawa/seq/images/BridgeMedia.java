@@ -5,15 +5,23 @@ import com.google.gson.JsonParser;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+/**
+ * Maps chat links to the media the Discord bridge delivered for them.
+ *
+ * <p>The bridge protocol carries no message identity, and {@code discord_media} updates carry
+ * only a display name. Delayed media is therefore matched only by content identity: the exact
+ * Discord attachment path, or the Klipy asset of a GIF link already seen in chat. Anything else
+ * is shown as its own message rather than attached to a guessed earlier one.
+ */
 public final class BridgeMedia {
+    private static final int MAX_REMEMBERED = 128;
     private static final LinkedHashMap<String, URI> RESOLVED = new LinkedHashMap<>();
-    private static final LinkedHashMap<String, List<Pending>> PENDING = new LinkedHashMap<>();
-
-    private record Pending(URI uri, long time) {}
+    private static final LinkedHashSet<String> CHAT_KLIPY_ASSETS = new LinkedHashSet<>();
 
     private BridgeMedia() {}
 
@@ -23,7 +31,7 @@ public final class BridgeMedia {
 
     public static synchronized void clear() {
         RESOLVED.clear();
-        PENDING.clear();
+        CHAT_KLIPY_ASSETS.clear();
     }
 
     private static String key(URI uri) {
@@ -32,7 +40,15 @@ public final class BridgeMedia {
 
     private static void remember(URI original, URI media) {
         RESOLVED.put(key(original), media);
-        while (RESOLVED.size() > 128) RESOLVED.remove(RESOLVED.keySet().iterator().next());
+        while (RESOLVED.size() > MAX_REMEMBERED)
+            RESOLVED.remove(RESOLVED.keySet().iterator().next());
+    }
+
+    /** Path of a Klipy asset without its extension, shared by its GIF and MP4 renditions. */
+    private static String klipyAsset(URI uri) {
+        String path = uri.getRawPath();
+        int dot = path.lastIndexOf('.');
+        return dot < 0 ? path : path.substring(0, dot);
     }
 
     public static synchronized String rewrite(String payload) {
@@ -44,7 +60,6 @@ public final class BridgeMedia {
             String type = json.get("type").getAsString();
             if (!Set.of("discord_chat", "discord_media").contains(type)
                     || !json.get("media_urls").isJsonArray()) return payload;
-            String user = json.has("username") ? json.get("username").getAsString() : "";
             boolean chat = type.equals("discord_chat");
             if (chat
                     && (!json.has("message")
@@ -64,65 +79,48 @@ public final class BridgeMedia {
                 URI gif = klipyMedia(url);
                 if (gif != null && !klipy.contains(gif)) {
                     klipy.add(gif);
-                    if (MediaLinks.isKlipyVideo(gif)) {
-                        String path = gif.getRawPath();
+                    if (MediaLinks.isKlipyVideo(gif))
                         remember(
-                                URI.create(
-                                        "https://static.klipy.com"
-                                                + path.substring(0, path.length() - 4)
-                                                + ".gif"),
+                                URI.create("https://static.klipy.com" + klipyAsset(gif) + ".gif"),
                                 gif);
-                    }
                 }
             }
-            long now = System.nanoTime();
-            PENDING.values()
-                    .forEach(list -> list.removeIf(item -> now - item.time() > 30_000_000_000L));
-            PENDING.values().removeIf(List::isEmpty);
             if (chat) {
                 String message = json.get("message").getAsString();
+                List<URI> links = MediaLinks.find(message);
                 List<URI> pages =
-                        MediaLinks.find(message).stream()
-                                .filter(MediaLinks::isKlipyPage)
-                                .distinct()
-                                .toList();
+                        links.stream().filter(MediaLinks::isKlipyPage).distinct().toList();
                 String rewritten = replace(message, signed);
-                for (URI original : MediaLinks.find(message)) {
+                for (URI original : links) {
                     if (!"static.klipy.com".equalsIgnoreCase(original.getHost())
                             || !original.getRawPath().endsWith(".gif")) continue;
-                    String stem =
-                            original.getRawPath().substring(0, original.getRawPath().length() - 4);
-                    for (URI actual : klipy) {
-                        if (actual.getRawPath().equals(stem + ".mp4")) remember(original, actual);
-                    }
+                    CHAT_KLIPY_ASSETS.add(klipyAsset(original));
+                    while (CHAT_KLIPY_ASSETS.size() > MAX_REMEMBERED)
+                        CHAT_KLIPY_ASSETS.remove(CHAT_KLIPY_ASSETS.iterator().next());
+                    for (URI actual : klipy)
+                        if (klipyAsset(actual).equals(klipyAsset(original)))
+                            remember(original, actual);
                 }
+                // Only media inside the same message can belong to its share page.
                 if (pages.size() == 1 && klipy.size() == 1) {
                     remember(pages.getFirst(), klipy.getFirst());
                     rewritten =
                             rewritten.replace(
                                     pages.getFirst().toString(), klipy.getFirst().toString());
-                } else if (!user.isEmpty() && !pages.isEmpty()) {
-                    var pending = PENDING.computeIfAbsent(user, ignored -> new ArrayList<>());
-                    for (URI page : pages) pending.add(new Pending(page, now));
-                    while (pending.size() > 8) pending.removeFirst();
-                    while (PENDING.size() > 32) PENDING.remove(PENDING.keySet().iterator().next());
                 }
                 if (rewritten.equals(message)) return payload;
                 json.addProperty("message", rewritten);
                 return json.toString();
             }
-            // Attachment paths stay stable when Discord sends a fresh signature.
-            if (klipy.isEmpty()) return payload;
-            List<Pending> pending = PENDING.remove(user);
-            if (pending != null && pending.size() == 1 && klipy.size() == 1) {
-                remember(pending.getFirst().uri(), klipy.getFirst());
-                return payload;
-            }
-            // Without a message ID, guessing could attach this media to the wrong chat message.
-            // Show it separately with the sender's name instead.
+            // Signed attachments above already refresh their exact attachment paths.
+            List<String> unmatched =
+                    klipy.stream()
+                            .filter(media -> !CHAT_KLIPY_ASSETS.contains(klipyAsset(media)))
+                            .map(URI::toString)
+                            .toList();
+            if (unmatched.isEmpty()) return payload;
             json.addProperty("type", "discord_chat");
-            json.addProperty(
-                    "message", String.join(" ", klipy.stream().map(URI::toString).toList()));
+            json.addProperty("message", String.join(" ", unmatched));
             return json.toString();
         } catch (RuntimeException invalidPayload) {
             return payload;

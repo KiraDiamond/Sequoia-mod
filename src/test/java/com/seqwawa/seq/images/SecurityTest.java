@@ -72,7 +72,55 @@ class SecurityTest {
                                     InetAddress.getByName("127.0.0.1")
                                 }));
         assertThrows(UnknownHostException.class, () -> PublicDns.checked(new InetAddress[0]));
-        assertThrows(UnknownHostException.class, () -> new PublicDns().resolve("localhost"));
+        assertThrows(UnknownHostException.class, () -> new PublicDns(deadline()).resolve("localhost"));
+    }
+
+    @Test
+    void stalledResolverIsBoundedByTheDownloadDeadline() throws Exception {
+        var release = new java.util.concurrent.CountDownLatch(1);
+        // Like the OS resolver, a stalled lookup ignores interruption.
+        PublicDns.Lookup stalled =
+                host -> {
+                    long end = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                    boolean interrupted = false;
+                    while (release.getCount() > 0 && System.nanoTime() < end) {
+                        try {
+                            release.await(end - System.nanoTime(), java.util.concurrent.TimeUnit.NANOSECONDS);
+                        } catch (InterruptedException e) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                    return new InetAddress[] {InetAddress.getByName("1.1.1.1")};
+                };
+        try {
+            long start = System.nanoTime();
+            var deadline = start + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(200);
+            var timeout =
+                    assertThrows(
+                            UnknownHostException.class,
+                            () -> new PublicDns(deadline, stalled).resolve("i.imgur.com"));
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertEquals("Media host lookup timed out", timeout.getMessage());
+            assertTrue(elapsedMs < 2_000, "lookup outlived its deadline: " + elapsedMs + " ms");
+            // While stalled lookups hold the resolver threads, new lookups fail instead of queueing
+            // without bound.
+            UnknownHostException last = null;
+            for (int i = 0; i < 8; i++) {
+                long shortDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50);
+                last =
+                        assertThrows(
+                                UnknownHostException.class,
+                                () -> new PublicDns(shortDeadline, stalled).resolve("i.imgur.com"));
+            }
+            assertEquals("Media host lookup unavailable", last.getMessage());
+        } finally {
+            release.countDown();
+        }
+        assertArrayEquals(
+                new InetAddress[] {InetAddress.getByName("1.1.1.1")},
+                new PublicDns(deadline(), host -> new InetAddress[] {InetAddress.getByName("1.1.1.1")})
+                        .resolve("i.imgur.com"));
     }
 
     @Test
@@ -210,20 +258,31 @@ class SecurityTest {
 
     @Test
     void invalidWorkerDimensionsAndExtraOutputAreRejectedBeforeAllocation() throws Exception {
-        Path path = temporary.resolve("frames.bin");
-        try (var out = new DataOutputStream(Files.newOutputStream(path))) {
+        var budget = new ByteBudget(64L * 1024 * 1024);
+        var header = new ByteArrayOutputStream();
+        try (var out = new DataOutputStream(header)) {
             out.writeInt(0x53494D31);
             out.writeInt(Integer.MAX_VALUE);
             out.writeInt(Integer.MAX_VALUE);
             out.writeInt(400);
         }
-        assertThrows(IOException.class, () -> DecodedFrames.read(path));
-        var valid =
-                new ImageDecoder.Animation(
-                        1, 1, List.of(new ImageDecoder.Frame(new int[] {0xff123456}, 20)));
-        DecodedFrames.write(path, valid);
-        Files.write(path, new byte[] {0}, StandardOpenOption.APPEND);
-        assertThrows(IOException.class, () -> DecodedFrames.read(path));
+        try (var lease = budget.open()) {
+            assertThrows(
+                    IOException.class,
+                    () -> DecodedFrames.read(new ByteArrayInputStream(header.toByteArray()), lease));
+            assertEquals(0, budget.used(), "Nothing may be reserved for an invalid header");
+        }
+        var valid = new ByteArrayOutputStream();
+        try (var out = new DataOutputStream(valid)) {
+            for (int value : new int[] {0x53494D31, 1, 1, 1, 20, 0xff123456}) out.writeInt(value);
+            out.write(0);
+        }
+        try (var lease = budget.open()) {
+            assertThrows(
+                    IOException.class,
+                    () -> DecodedFrames.read(new ByteArrayInputStream(valid.toByteArray()), lease));
+        }
+        assertEquals(0, budget.used());
     }
 
     public static final class WaitingWorker {
@@ -286,9 +345,13 @@ class SecurityTest {
             var bytes = new ByteArrayOutputStream();
             var out = new DataOutputStream(bytes);
             for (int v : values) out.writeInt(v);
-            assertThrows(
-                    IOException.class,
-                    () -> DecodedFrames.read(new ByteArrayInputStream(bytes.toByteArray())));
+            try (var lease = new ByteBudget(64L * 1024 * 1024).open()) {
+                assertThrows(
+                        IOException.class,
+                        () ->
+                                DecodedFrames.read(
+                                        new ByteArrayInputStream(bytes.toByteArray()), lease));
+            }
         }
     }
 
@@ -306,7 +369,7 @@ class SecurityTest {
                                 | 19);
         var bytes = new ByteArrayOutputStream();
         assertTrue(ImageIO.write(picture, "png", bytes));
-        var actual = IsolatedDecoder.decode(bytes.toByteArray());
+        var actual = ImageDecoder.decode(bytes.toByteArray());
         assertEquals(17, actual.width());
         assertEquals(19, actual.height());
         assertEquals(1, actual.frames().size());
@@ -320,7 +383,7 @@ class SecurityTest {
         for (int y = 0; y < 19; y++) for (int x = 0; x < 17; x++) picture.setRGB(x, y, 0xffe01020);
         var bytes = new ByteArrayOutputStream();
         assertTrue(ImageIO.write(picture, "jpeg", bytes));
-        var actual = IsolatedDecoder.decode(bytes.toByteArray());
+        var actual = ImageDecoder.decode(bytes.toByteArray());
         assertEquals(17, actual.width());
         assertEquals(19, actual.height());
         assertEquals(1, actual.frames().size());

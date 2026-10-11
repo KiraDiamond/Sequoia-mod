@@ -1,10 +1,20 @@
 package com.seqwawa.seq.images;
 
 import java.io.InterruptedIOException;
+import java.util.ArrayList;
+import java.util.List;
 
+/** Cancels one preview load and aborts whatever blocking resources it currently holds. */
 final class MediaCancellation {
+    /** Detaches one abort action once its resource has finished. */
+    @FunctionalInterface
+    interface Registration extends AutoCloseable {
+        @Override
+        void close();
+    }
+
     private volatile boolean cancelled;
-    private Runnable abort;
+    private final List<Runnable> aborts = new ArrayList<>();
 
     boolean isCancelled() {
         return cancelled;
@@ -15,11 +25,21 @@ final class MediaCancellation {
             throw new InterruptedIOException("Image preview cancelled");
     }
 
-    void attach(Runnable action) throws InterruptedIOException {
+    /**
+     * Runs {@code action} if the load is cancelled while the returned registration is open.
+     * Several resources (a request and a helper process) can be attached at once.
+     *
+     * @throws InterruptedIOException after running {@code action} if already cancelled
+     */
+    Registration attach(Runnable action) throws InterruptedIOException {
         synchronized (this) {
             if (!cancelled && !Thread.currentThread().isInterrupted()) {
-                abort = action;
-                return;
+                aborts.add(action);
+                return () -> {
+                    synchronized (this) {
+                        aborts.remove(action);
+                    }
+                };
             }
         }
         // Cancellation may race with opening a request or starting a helper.
@@ -27,17 +47,13 @@ final class MediaCancellation {
         throw new InterruptedIOException("Image preview cancelled");
     }
 
-    synchronized void detach() {
-        abort = null;
-    }
-
     void cancel() {
-        Runnable action;
+        List<Runnable> actions;
         synchronized (this) {
             cancelled = true;
-            action = abort;
-            abort = null;
+            actions = List.copyOf(aborts);
+            aborts.clear();
         }
-        if (action != null) action.run();
+        actions.forEach(Runnable::run);
     }
 }

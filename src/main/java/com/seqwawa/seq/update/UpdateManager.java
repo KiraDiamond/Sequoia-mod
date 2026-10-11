@@ -44,6 +44,7 @@ public class UpdateManager implements NotificationAccessor {
     private static final URI DEFAULT_RELEASES_LATEST_API =
             URI.create("https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/releases/latest");
     private static final Pattern SEMVER_PATTERN = Pattern.compile("^v?(\\d+)\\.(\\d+)\\.(\\d+)$");
+    private static final String CUSTOM_FEATURE_BUILD = "images";
 
     private static UpdateManager instance;
 
@@ -162,10 +163,23 @@ public class UpdateManager implements NotificationAccessor {
 
     private boolean blockUpstreamUpdates() {
         // Stock releases cannot preserve features carried by a custom build.
-        if (!resolveInstalledVersion().contains("+")) return false;
+        if (!isCustomFeatureBuild(resolveInstalledVersion())) return false;
         pendingRelease = null;
         statusLine = "Upstream updates are disabled for custom builds.";
         return true;
+    }
+
+    /**
+     * True for builds that carry features absent from stock releases, marked by an
+     * {@code images} identifier in the SemVer build metadata (for example
+     * {@code 1.10.8+images.1}). Other build metadata, such as a CI build number, still updates.
+     */
+    static boolean isCustomFeatureBuild(String version) {
+        int plus = version.indexOf('+');
+        if (plus < 0) return false;
+        for (String identifier : version.substring(plus + 1).split("\\."))
+            if (identifier.equalsIgnoreCase(CUSTOM_FEATURE_BUILD)) return true;
+        return false;
     }
 
     private void checkForUpdates(boolean manualTrigger) {

@@ -28,6 +28,9 @@ final class MediaDownload {
         TIMER.setRemoveOnCancelPolicy(true);
     }
 
+    /** Whole-download deadline, also bounding DNS through {@link PublicDns}. */
+    static final long DEADLINE_NANOS = TimeUnit.SECONDS.toNanos(20);
+
     private static final Pattern TAG =
             Pattern.compile("<meta\\b[^>]{0,8192}>", Pattern.CASE_INSENSITIVE);
     private static final Pattern OG =
@@ -36,9 +39,20 @@ final class MediaDownload {
     private static final Pattern CONTENT =
             Pattern.compile("content\\s*=\\s*[\"']([^\"']{1,4096})[\"']", Pattern.CASE_INSENSITIVE);
 
+    /** A Discord attachment whose signed URL has not arrived yet. */
     static final class PendingMedia extends IOException {
         PendingMedia() {
             super("Waiting for Discord media...");
+        }
+    }
+
+    /**
+     * A Klipy share page with no media from the same bridge message. Its media, if Discord sends
+     * it later, is shown as its own message because the bridge carries no message identity.
+     */
+    static final class UnresolvedKlipyPage extends IOException {
+        UnresolvedKlipyPage() {
+            super("Klipy page link; its GIF appears as a separate bridge message");
         }
     }
 
@@ -50,14 +64,25 @@ final class MediaDownload {
     }
 
     static byte[] fetch(URI uri) throws IOException {
-        return fetch(uri, new MediaCancellation());
+        try (var lease = new ByteBudget(MediaFormat.MAX_BYTES).open()) {
+            return fetch(uri, new MediaCancellation(), lease);
+        }
     }
 
-    static byte[] fetch(URI uri, MediaCancellation cancellation) throws IOException {
+    /**
+     * Downloads one allowlisted media file, following at most three validated redirects.
+     *
+     * @param lease charged for the largest body this download may hold; the unused part is
+     *     returned once the final body is read
+     */
+    static byte[] fetch(URI uri, MediaCancellation cancellation, ByteBudget.Lease lease)
+            throws IOException {
         cancellation.check();
         if (!MediaLinks.allowed(uri)) throw new IOException("Unsupported image destination");
         URI resolved = BridgeMedia.resolve(uri);
-        if (MediaLinks.isKlipyPage(resolved)) throw new PendingMedia();
+        if (MediaLinks.isKlipyPage(resolved)) throw new UnresolvedKlipyPage();
+        long deadline = System.nanoTime() + DEADLINE_NANOS;
+        lease.reserve(MediaFormat.MAX_BYTES);
         var connectionFactory =
                 ManagedHttpClientConnectionFactory.builder()
                         .http1Config(
@@ -68,7 +93,7 @@ final class MediaDownload {
                         .build();
         var manager =
                 PoolingHttpClientConnectionManagerBuilder.create()
-                        .setDnsResolver(new PublicDns())
+                        .setDnsResolver(new PublicDns(deadline))
                         .setConnectionFactory(connectionFactory)
                         .setMaxConnTotal(1)
                         .setMaxConnPerRoute(1)
@@ -95,11 +120,14 @@ final class MediaDownload {
                         .disableRedirectHandling()
                         .setUserAgent("SequoiaImages/1.1.5")
                         .build()) {
-            return fetch(
-                    resolved,
-                    (destination, limit, deadline) ->
-                            request(client, destination, limit, deadline, cancellation),
-                    System.nanoTime() + 20_000_000_000L);
+            byte[] body =
+                    fetch(
+                            resolved,
+                            (destination, limit, until) ->
+                                    request(client, destination, limit, until, cancellation),
+                            deadline);
+            lease.release(MediaFormat.MAX_BYTES - body.length);
+            return body;
         }
     }
 
@@ -180,8 +208,7 @@ final class MediaDownload {
                         request::cancel,
                         Math.max(1, deadline - System.nanoTime()),
                         TimeUnit.NANOSECONDS);
-        try {
-            cancellation.attach(request::cancel);
+        try (var abort = cancellation.attach(request::cancel)) {
             try (var response = client.executeOpen(null, request, null)) {
                 try {
                     int status = response.getCode();
@@ -194,22 +221,46 @@ final class MediaDownload {
                     String encoding = entity.getContentEncoding();
                     if (encoding != null && !encoding.equalsIgnoreCase("identity"))
                         throw new IOException("Unsupported HTTP content encoding");
-                    if (entity.getContentLength() > limit)
-                        throw new IOException("Media exceeds download limit");
+                    long declared = entity.getContentLength();
+                    if (declared > limit) throw new IOException("Media exceeds download limit");
                     return new Reply(
-                            status, null, readLimited(entity.getContent(), limit, deadline));
+                            status,
+                            null,
+                            readLimited(entity.getContent(), limit, declared, deadline));
                 } finally {
                     request.cancel();
                 } // Abort here: closing the response first may drain an oversized body.
             }
         } finally {
-            cancellation.detach();
             watchdog.cancel(false);
             request.cancel();
         }
     }
 
     static byte[] readLimited(InputStream stream, int limit, long deadline) throws IOException {
+        return readLimited(stream, limit, -1, deadline);
+    }
+
+    /**
+     * Reads a body of at most {@code limit} bytes. A declared length is read into an exact
+     * array and must match; otherwise the body grows in chunks.
+     */
+    static byte[] readLimited(InputStream stream, int limit, long declared, long deadline)
+            throws IOException {
+        if (declared > limit) throw new IOException("Media exceeds download limit");
+        if (declared >= 0) {
+            byte[] body = new byte[(int) declared];
+            int filled = 0;
+            while (filled < body.length) {
+                checkDeadline(deadline);
+                int count = stream.read(body, filled, Math.min(1 << 16, body.length - filled));
+                if (count < 0) throw new IOException("Truncated media response");
+                filled += count;
+            }
+            checkDeadline(deadline);
+            if (stream.read() != -1) throw new IOException("Media exceeds declared length");
+            return body;
+        }
         var output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int count;

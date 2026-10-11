@@ -49,7 +49,10 @@ class NativePlatformTest {
                         return super.read(b, off, Math.min(len, 1));
                     }
                 };
-        var a = DecodedFrames.read(input);
+        ImageDecoder.Animation a;
+        try (var lease = new ByteBudget(1 << 20).open()) {
+            a = ImageDecoder.expand(DecodedFrames.read(input, lease));
+        }
         assertEquals(55, a.frames().getFirst().durationMs());
         assertArrayEquals(new int[] {0x00123456, 0x80abcdef}, a.frames().getFirst().argb());
     }
