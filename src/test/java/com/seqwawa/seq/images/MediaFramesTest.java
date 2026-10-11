@@ -45,10 +45,7 @@ class MediaFramesTest {
             assertEquals(310, media.timeline().cycleMs());
             try (var reader = media.reader()) {
                 for (int loop = 0; loop < 3; loop++)
-                    for (int f = 0; f < 4; f++) {
-                        assertEquals(f, reader.nextIndex());
-                        assertRgbaMatches(argbFrame(f), reader.next());
-                    }
+                    for (int f = 0; f < 4; f++) assertRgbaMatches(argbFrame(f), reader.next());
             }
         }
     }

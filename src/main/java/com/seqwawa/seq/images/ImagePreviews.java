@@ -191,8 +191,7 @@ public final class ImagePreviews {
         if (frames != null) {
             int maxW = Math.max(1, Math.min(256, graphics.guiWidth() - 20));
             int maxH = Math.max(1, Math.min(180, graphics.guiHeight() - 40));
-            double scale =
-                    Math.min((double) maxW / frames.width(), (double) maxH / frames.height());
+            double scale = fitScale(frames, maxW, maxH);
             int w = Math.max(1, (int) (frames.width() * scale)),
                     h = Math.max(1, (int) (frames.height() * scale));
             int left = Math.max(4, Math.min(mouseX + 12, graphics.guiWidth() - w - 12));
@@ -219,6 +218,11 @@ public final class ImagePreviews {
             Minecraft.getInstance().setScreen(new PreviewScreen(parent, uri));
         }
         return true;
+    }
+
+    /** Largest scale that fits the frames within the given box, keeping their aspect ratio. */
+    static double fitScale(MediaFrames frames, double maxWidth, double maxHeight) {
+        return Math.min(maxWidth / frames.width(), maxHeight / frames.height());
     }
 
     static PreviewCache.Preview get(URI uri) {

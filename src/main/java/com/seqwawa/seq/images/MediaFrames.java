@@ -82,14 +82,12 @@ final class MediaFrames {
     int frameAt(long elapsedMs) {
         var finished = timeline;
         if (finished != null) return finished.frameAt(elapsedMs);
-        int ready = available;
-        int found = Arrays.binarySearch(ends, 0, ready, Math.max(0, elapsedMs));
-        return found >= 0 ? found + 1 : -found - 1;
+        return FrameTimeline.frameEndingAfter(ends, available, Math.max(0, elapsedMs));
     }
 
     /** Start of a published frame within the loop, in milliseconds. */
     long startMs(int frame) {
-        return frame == 0 ? 0 : ends[frame - 1];
+        return FrameTimeline.startMs(ends, frame);
     }
 
     /** RGBA bytes in one expanded frame. */
@@ -183,12 +181,11 @@ final class MediaFrames {
                     || argb.length != previous.length
                     || !FrameTimeline.validDuration(durationMs))
                 throw new IOException("Invalid decoded frame");
-            int n = pixels;
-            for (int p = 0, i = 0; p < n; p++, i += 4) {
+            for (int p = 0, i = 0; p < pixels; p++, i += 4) {
                 planes[p] = (byte) (argb[i + 1] - previous[i + 1]);
-                planes[n + p] = (byte) (argb[i + 2] - previous[i + 2]);
-                planes[2 * n + p] = (byte) (argb[i + 3] - previous[i + 3]);
-                planes[3 * n + p] = (byte) (argb[i] - previous[i]);
+                planes[pixels + p] = (byte) (argb[i + 2] - previous[i + 2]);
+                planes[2 * pixels + p] = (byte) (argb[i + 3] - previous[i + 3]);
+                planes[3 * pixels + p] = (byte) (argb[i] - previous[i]);
             }
             System.arraycopy(argb, 0, previous, 0, argb.length);
             deflater.reset();
@@ -237,11 +234,6 @@ final class MediaFrames {
         private final byte[] overflow = new byte[1];
         private int next;
 
-        /** Index of the frame the following {@link #next()} call returns. */
-        int nextIndex() {
-            return next == chunks.length ? 0 : next;
-        }
-
         /**
          * Returns the next frame as RGBA bytes. The array is reused by the following call.
          *
@@ -254,12 +246,12 @@ final class MediaFrames {
             }
             if (next >= available) throw new IOException("Preview frame not decoded yet");
             inflate(chunks[next]);
-            int n = width * height;
-            for (int p = 0, i = 0; p < n; p++, i += 4) {
+            int pixels = width * height;
+            for (int p = 0, i = 0; p < pixels; p++, i += 4) {
                 frame[i] += planes[p];
-                frame[i + 1] += planes[n + p];
-                frame[i + 2] += planes[2 * n + p];
-                frame[i + 3] += planes[3 * n + p];
+                frame[i + 1] += planes[pixels + p];
+                frame[i + 2] += planes[2 * pixels + p];
+                frame[i + 3] += planes[3 * pixels + p];
             }
             next++;
             return frame;

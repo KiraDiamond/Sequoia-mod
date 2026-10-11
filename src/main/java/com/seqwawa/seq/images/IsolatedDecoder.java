@@ -35,7 +35,7 @@ final class IsolatedDecoder {
     private static final long DECODE_LIMIT_SECONDS = 22;
     /** Upper bound on one session, including the download the helper waits through. */
     private static final int BROKER_LIMIT_SECONDS = 60;
-    private static final long EXIT_GRACE_MILLIS = 2_000;
+    private static final int EXIT_GRACE_SECONDS = 2;
     /** Time the Windows broker gets to stop the decoder and remove its AppContainer state. */
     private static final long BROKER_CLEANUP_MILLIS = 5_000;
     private static final long REAP_MILLIS = 3_000;
@@ -186,10 +186,7 @@ final class IsolatedDecoder {
                 try (InputStream input = process.getInputStream()) {
                     frames = DecodedFrames.read(input, lease, firstFrame);
                 }
-                if (!waitUninterruptibly(process, EXIT_GRACE_MILLIS))
-                    throw new IOException("Image decoder did not exit after its output");
-                if (process.exitValue() != 0)
-                    throw new IOException("Image decoder exited with " + process.exitValue());
+                await(process, EXIT_GRACE_SECONDS, ignored -> terminate());
                 cancellation.check();
                 return frames;
             } catch (IOException failure) {
@@ -261,9 +258,7 @@ final class IsolatedDecoder {
                 requestBrokerCancel();
                 if (waitUninterruptibly(process, BROKER_CLEANUP_MILLIS)) return;
             }
-            process.destroyForcibly();
-            if (!waitUninterruptibly(process, REAP_MILLIS))
-                throw new IOException("Image decoder did not exit after termination");
+            killAndReap(process);
         }
 
         private String diagnosticText() {
@@ -332,33 +327,49 @@ final class IsolatedDecoder {
         }
     }
 
-    /**
-     * Waits for a worker; on timeout or interruption the worker is killed and reaped before
-     * this returns.
-     */
+    /** Stops a worker process and waits for it to exit. */
+    @FunctionalInterface
+    interface Stopper {
+        void stop(Process process) throws IOException;
+    }
+
+    /** Waits for a worker to exit successfully, killing and reaping it if it does not. */
     static void await(Process process, int seconds) throws IOException {
+        await(process, seconds, IsolatedDecoder::killAndReap);
+    }
+
+    /**
+     * Waits for a worker to exit successfully. On timeout or interruption {@code stop} has ended
+     * the worker before this returns; the timeout or interruption stays the primary failure.
+     */
+    static void await(Process process, int seconds, Stopper stop) throws IOException {
         boolean exited;
         try {
             exited = process.waitFor(seconds, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
-            kill(process);
+            var cancelled = new InterruptedIOException("Image decoding cancelled");
+            stopRecording(process, stop, cancelled);
             Thread.currentThread().interrupt();
-            throw new InterruptedIOException("Image decoding cancelled");
+            throw cancelled;
         }
         if (!exited) {
             var timeout = new IOException("Image decoding exceeded the safety time limit");
-            try {
-                kill(process);
-            } catch (IOException cleanup) {
-                timeout.addSuppressed(cleanup);
-            }
+            stopRecording(process, stop, timeout);
             throw timeout;
         }
         if (process.exitValue() != 0)
             throw new IOException("Image could not be decoded within safety limits");
     }
 
-    private static void kill(Process process) throws IOException {
+    private static void stopRecording(Process process, Stopper stop, IOException primary) {
+        try {
+            stop.stop(process);
+        } catch (IOException cleanup) {
+            primary.addSuppressed(cleanup);
+        }
+    }
+
+    private static void killAndReap(Process process) throws IOException {
         process.destroyForcibly();
         if (!waitUninterruptibly(process, REAP_MILLIS))
             throw new IOException("Image decoder did not exit after termination");
@@ -405,7 +416,7 @@ final class IsolatedDecoder {
             BUNDLED.put(key, bundled);
         }
         String hash = bundled.hash();
-        boolean windows = System.getProperty("os.name").startsWith("Windows");
+        boolean windows = platform.startsWith("windows-");
         if (extractionRoot == null) {
             extractionRoot =
                     (windows

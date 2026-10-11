@@ -108,7 +108,8 @@ class MediaCancellationTest {
                             URI.class,
                             int.class,
                             long.class,
-                            MediaCancellation.class);
+                            MediaCancellation.class,
+                            ByteBudget.Lease.class);
             request.setAccessible(true);
             var uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/media");
             Future<?> result =
@@ -126,7 +127,8 @@ class MediaCancellationTest {
                                                                 System.nanoTime()
                                                                         + TimeUnit.SECONDS.toNanos(
                                                                                 10),
-                                                                cancellation));
+                                                                cancellation,
+                                                                new ByteBudget(1 << 20).open()));
                                 assertInstanceOf(IOException.class, error.getCause());
                             });
             assertTrue(entered.await(2, TimeUnit.SECONDS));

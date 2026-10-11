@@ -73,7 +73,7 @@ class PreviewCacheTest {
             }
             assertEquals(1, decodes.get(), "The active clip was fetched or decoded again");
             assertEquals(0, harness.pendingMain());
-            assertEquals(0, cache.inFlightBytes());
+            harness.awaitInFlightReleased();
         }
     }
 
@@ -142,7 +142,7 @@ class PreviewCacheTest {
             harness.runMain();
             assertTrue(frames.complete());
             assertEquals(frames.bytes(), cache.retainedBytes());
-            assertEquals(0, cache.inFlightBytes());
+            harness.awaitInFlightReleased();
             assertEquals(0, frames.frameAt(60), "a finished animation loops");
         }
     }
@@ -158,7 +158,23 @@ class PreviewCacheTest {
             var preview = harness.cache().get(link("huge"));
             harness.runMain();
             assertEquals(PreviewState.BUSY, preview.status(harness.cache().now()));
-            assertEquals(0, harness.cache().inFlightBytes());
+            harness.awaitInFlightReleased();
+        }
+    }
+
+    @Test
+    void droppedCompletionsStillReturnTheirInFlightReservation() throws Exception {
+        var shared = noise(4, 5);
+        try (var harness =
+                new PreviewCacheHarness((link, cancellation, lease, first) -> {
+                    lease.reserve(MediaFormat.MAX_BYTES);
+                    return shared;
+                })) {
+            harness.cache().get(link("dropped"));
+            for (int i = 0; i < 2_000 && harness.pendingMain() == 0; i++) Thread.sleep(5);
+            assertEquals(1, harness.pendingMain());
+            harness.dropMain();
+            harness.awaitInFlightReleased();
         }
     }
 }

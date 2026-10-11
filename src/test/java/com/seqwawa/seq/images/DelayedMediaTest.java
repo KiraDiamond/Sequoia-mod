@@ -102,6 +102,16 @@ class DelayedMediaTest {
     }
 
     @Test
+    void anotherUsersEarlierGifLinkDoesNotHideDelayedMedia() {
+        BridgeMedia.rewrite(payload("discord_chat", "Alice", GIF));
+        BridgeMedia.rewrite(payload("discord_chat", "Bob", PAGE));
+        var result = json(BridgeMedia.rewrite(payload("discord_media", "Bob", null, PROXY)));
+        assertEquals("discord_chat", result.get("type").getAsString());
+        assertEquals("Bob", result.get("username").getAsString());
+        assertEquals(MP4, result.get("message").getAsString());
+    }
+
+    @Test
     void oneSendersOutstandingMessagesNeverCrossAssociate() {
         String other = PAGE.replace("wynncraft-hello-chat", "another-gif");
         String otherMedia = MP4.replace("xiDo32fjTTjtLylez", "anotherAsset");
@@ -209,11 +219,12 @@ class DelayedMediaTest {
     void directGifPreviewRecoversWhenActualMediaArrivesSeparately() {
         BridgeMedia.rewrite(payload("discord_chat", "Alice", GIF));
         assertEquals(URI.create(GIF), BridgeMedia.resolve(URI.create(GIF)));
-        // The asset itself identifies the link; any sender may deliver it, and the link that
-        // already shows it needs no second message.
-        String delayed = payload("discord_media", "Bob", null, PROXY);
-        assertSame(delayed, BridgeMedia.rewrite(delayed));
+        // The asset itself identifies the GIF link. The delayed media still gets its own line,
+        // because nothing tells which message, if any, it belongs to.
+        var delayed = json(BridgeMedia.rewrite(payload("discord_media", "Bob", null, PROXY)));
         assertEquals(URI.create(MP4), BridgeMedia.resolve(URI.create(GIF)));
+        assertEquals("discord_chat", delayed.get("type").getAsString());
+        assertEquals(MP4, delayed.get("message").getAsString());
     }
 
     @Test

@@ -46,14 +46,24 @@ final class FrameTimeline {
 
     /** Start of {@code frame} within the loop, in milliseconds. */
     long startMs(int frame) {
-        return frame == 0 ? 0 : ends[frame - 1];
+        return startMs(ends, frame);
     }
 
     /** Frame shown {@code elapsedMs} after playback started, looping forever. */
     int frameAt(long elapsedMs) {
-        long time = Math.floorMod(elapsedMs, cycleMs());
-        // First frame whose end lies after the loop position.
-        int found = Arrays.binarySearch(ends, time);
+        return frameEndingAfter(ends, ends.length, Math.floorMod(elapsedMs, cycleMs()));
+    }
+
+    static long startMs(long[] ends, int frame) {
+        return frame == 0 ? 0 : ends[frame - 1];
+    }
+
+    /**
+     * First of the first {@code count} frames whose cumulative end lies after {@code time}, or
+     * {@code count} if none does.
+     */
+    static int frameEndingAfter(long[] ends, int count, long time) {
+        int found = Arrays.binarySearch(ends, 0, count, time);
         return found >= 0 ? found + 1 : -found - 1;
     }
 }

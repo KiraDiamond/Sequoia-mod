@@ -75,10 +75,6 @@ final class PreviewPlayer implements AutoCloseable {
         return lastDrawn;
     }
 
-    boolean fullyUploaded() {
-        return uploaded == frameCount;
-    }
-
     /**
      * Draws the frame due at {@code now}. While the first loop is still being decoded or
      * uploaded, playback holds on the newest uploaded frame rather than skipping ahead.

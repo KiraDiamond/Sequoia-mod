@@ -5,7 +5,6 @@ import com.google.gson.JsonParser;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -14,14 +13,13 @@ import java.util.regex.Pattern;
  * Maps chat links to the media the Discord bridge delivered for them.
  *
  * <p>The bridge protocol carries no message identity, and {@code discord_media} updates carry
- * only a display name. Delayed media is therefore matched only by content identity: the exact
- * Discord attachment path, or the Klipy asset of a GIF link already seen in chat. Anything else
- * is shown as its own message rather than attached to a guessed earlier one.
+ * only a display name. Delayed media is therefore never attached to an earlier message: a signed
+ * attachment only refreshes links to that exact attachment path, an MP4 rendition only resolves
+ * the exact Klipy GIF it renders, and delayed Klipy media is always shown as its own message.
  */
 public final class BridgeMedia {
     private static final int MAX_REMEMBERED = 128;
     private static final LinkedHashMap<String, URI> RESOLVED = new LinkedHashMap<>();
-    private static final LinkedHashSet<String> CHAT_KLIPY_ASSETS = new LinkedHashSet<>();
 
     private BridgeMedia() {}
 
@@ -31,7 +29,6 @@ public final class BridgeMedia {
 
     public static synchronized void clear() {
         RESOLVED.clear();
-        CHAT_KLIPY_ASSETS.clear();
     }
 
     private static String key(URI uri) {
@@ -94,9 +91,6 @@ public final class BridgeMedia {
                 for (URI original : links) {
                     if (!"static.klipy.com".equalsIgnoreCase(original.getHost())
                             || !original.getRawPath().endsWith(".gif")) continue;
-                    CHAT_KLIPY_ASSETS.add(klipyAsset(original));
-                    while (CHAT_KLIPY_ASSETS.size() > MAX_REMEMBERED)
-                        CHAT_KLIPY_ASSETS.remove(CHAT_KLIPY_ASSETS.iterator().next());
                     for (URI actual : klipy)
                         if (klipyAsset(actual).equals(klipyAsset(original)))
                             remember(original, actual);
@@ -113,14 +107,10 @@ public final class BridgeMedia {
                 return json.toString();
             }
             // Signed attachments above already refresh their exact attachment paths.
-            List<String> unmatched =
-                    klipy.stream()
-                            .filter(media -> !CHAT_KLIPY_ASSETS.contains(klipyAsset(media)))
-                            .map(URI::toString)
-                            .toList();
-            if (unmatched.isEmpty()) return payload;
+            if (klipy.isEmpty()) return payload;
             json.addProperty("type", "discord_chat");
-            json.addProperty("message", String.join(" ", unmatched));
+            json.addProperty(
+                    "message", String.join(" ", klipy.stream().map(URI::toString).toList()));
             return json.toString();
         } catch (RuntimeException invalidPayload) {
             return payload;

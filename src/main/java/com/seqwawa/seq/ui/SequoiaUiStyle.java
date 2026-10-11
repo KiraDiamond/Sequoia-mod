@@ -9,9 +9,9 @@ import com.seqwawa.seq.utils.rendering.UiCanvas;
 import com.seqwawa.seq.utils.rendering.UiRenderer;
 
 /** Shared navigation and search conventions, matching Party Finder. */
-final class SequoiaUiStyle {
-    static final float HEADER_HEIGHT = 30;
-    static final float CONTENT_PADDING = 8;
+public final class SequoiaUiStyle {
+    public static final float HEADER_HEIGHT = 30;
+    public static final float CONTENT_PADDING = 8;
     static final float HEADER_CONTROL_HEIGHT = DropdownMenu.CONTROL_HEIGHT;
     private static final float SEARCH_BAR_WIDTH = 140;
 

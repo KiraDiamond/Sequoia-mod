@@ -3,7 +3,13 @@ package com.seqwawa.seq.images;
 import static com.seqwawa.seq.managers.ThemeManager.color;
 import static com.seqwawa.seq.ui.theme.UiColor.*;
 
-import com.seqwawa.seq.ui.theme.UiColor;
+import com.seqwawa.seq.client.SeqClient;
+import com.seqwawa.seq.render.MinecraftGuiOverlay;
+import com.seqwawa.seq.ui.SequoiaUiStyle;
+import com.seqwawa.seq.utils.rendering.MinecraftUiRenderer;
+import com.seqwawa.seq.utils.rendering.UiCanvas;
+import com.seqwawa.seq.utils.rendering.UiRenderMetrics;
+import com.seqwawa.seq.utils.rendering.UiRenderer;
 
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
@@ -15,21 +21,45 @@ import org.jetbrains.annotations.NotNull;
 import java.net.URI;
 
 /**
- * Enlarged preview in a themed panel. UiCanvas commands flush after the GUI pass and would paint
- * over the GuiGraphics-drawn image, and UiRenderer images decode encoded bytes in-process, which
- * untrusted media must never reach. The whole screen therefore uses GuiGraphics with theme tokens,
- * keeping each token's configured alpha.
+ * Enlarged preview in a themed panel. The panel is drawn with UiCanvas; the image is drawn in
+ * the Minecraft GUI pass that runs after the UiCanvas frame, so it sits on top of the panel.
  */
-final class PreviewScreen extends Screen {
-    private static final int PADDING = 8;
-    private static final int HEADER = 20;
-    private static final int CLOSE = 14;
-    private static final int MARGIN = 16;
+final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
+    private static final float MARGIN = 16;
+    private static final float CLOSE_SIZE = 18;
+    private static final float TITLE_TEXT_SIZE = 14;
+    private static final float BODY_TEXT_SIZE = 12;
 
     private final Screen parent;
     private final URI uri;
-    private int closeX;
-    private int closeY;
+    private PreviewCache.Preview preview;
+    private Layout layout;
+
+    /** Panel geometry in Sequoia UI units. */
+    private record Layout(
+            float panelX,
+            float panelY,
+            float panelWidth,
+            float panelHeight,
+            float contentX,
+            float contentY,
+            float contentWidth,
+            float contentHeight) {
+        float closeX() {
+            return panelX + panelWidth - SequoiaUiStyle.CONTENT_PADDING - CLOSE_SIZE;
+        }
+
+        float closeY() {
+            return panelY + (SequoiaUiStyle.HEADER_HEIGHT - CLOSE_SIZE) / 2;
+        }
+
+        boolean overClose(float x, float y) {
+            return x >= closeX()
+                    && x < closeX() + CLOSE_SIZE
+                    && y >= closeY()
+                    && y < closeY() + CLOSE_SIZE;
+        }
+    }
 
     PreviewScreen(Screen parent, URI uri) {
         super(Component.literal("Image Preview"));
@@ -49,77 +79,135 @@ final class PreviewScreen extends Screen {
             onClose();
             return;
         }
-        var preview = ImagePreviews.get(uri);
+        preview = ImagePreviews.get(uri);
         var frames = preview.frames();
-        String status = preview.status(System.nanoTime());
-        int contentW, contentH;
+        String status = frames == null ? preview.status(System.nanoTime()) : null;
+        String font = SeqClient.getFontManager().getSelectedFont();
+        var metrics = MinecraftUiRenderer.metrics();
+        layout = layout(metrics, frames, status, font);
+        var current = layout;
+        boolean closeHovered =
+                current.overClose(
+                        MinecraftUiRenderer.mouseX(mouseX), MinecraftUiRenderer.mouseY(mouseY));
+        UiRenderer.renderScreen(
+                this, canvas -> drawPanel(canvas, font, current, closeHovered, status));
+    }
+
+    private Layout layout(UiRenderMetrics metrics, MediaFrames frames, String status, String font) {
+        float padding = SequoiaUiStyle.CONTENT_PADDING, header = SequoiaUiStyle.HEADER_HEIGHT;
+        float maxWidth = Math.max(1, metrics.width() - 2 * (MARGIN + padding));
+        float maxHeight = Math.max(1, metrics.height() - 2 * (MARGIN + padding) - header);
+        float contentWidth, contentHeight;
         if (frames != null) {
-            double scale =
-                    Math.min(
-                            (double) Math.max(1, width - 2 * (MARGIN + PADDING)) / frames.width(),
-                            (double) Math.max(1, height - 2 * (MARGIN + PADDING) - HEADER)
-                                    / frames.height());
-            contentW = Math.max(1, (int) (frames.width() * scale));
-            contentH = Math.max(1, (int) (frames.height() * scale));
+            double scale = ImagePreviews.fitScale(frames, maxWidth, maxHeight);
+            contentWidth = (float) (frames.width() * scale);
+            contentHeight = (float) (frames.height() * scale);
         } else {
-            contentW = Math.min(width - 2 * (MARGIN + PADDING), font.width(status) + 2 * PADDING);
-            contentH = font.lineHeight + 2 * PADDING;
+            float statusWidth = UiRenderer.measureText(status, font, BODY_TEXT_SIZE).width();
+            contentWidth = Math.min(maxWidth, statusWidth + 2 * padding);
+            contentHeight = BODY_TEXT_SIZE + 2 * padding;
         }
-        int panelW = Math.max(contentW, font.width(title) + CLOSE + 3 * PADDING) + 2 * PADDING;
-        int panelH = HEADER + contentH + 2 * PADDING;
-        int left = (width - panelW) / 2, top = (height - panelH) / 2;
-        graphics.fill(0, 0, width, height, argb(BACKGROUND_MODAL_OVERLAY));
-        graphics.fill(left, top, left + panelW, top + panelH, argb(BACKGROUND_BODY_OPAQUE));
-        graphics.fill(left, top, left + panelW, top + HEADER, argb(BACKGROUND_HEADER));
-        graphics.fill(
-                left, top + HEADER - 1, left + panelW, top + HEADER, argb(ACCENT_PRIMARY_DARK));
-        graphics.drawString(
-                font,
-                title,
-                left + PADDING,
-                top + (HEADER - font.lineHeight) / 2 + 1,
-                argb(ACCENT_PRIMARY_HOVER),
-                false);
-        closeX = left + panelW - PADDING - CLOSE;
-        closeY = top + (HEADER - CLOSE) / 2;
-        boolean closeHovered = overClose(mouseX, mouseY);
-        graphics.fill(
-                closeX,
-                closeY,
-                closeX + CLOSE,
-                closeY + CLOSE,
-                argb(closeHovered ? ACCENT_PRIMARY_DARK_HOVER : CONTROL_INPUT_HOVER));
-        graphics.drawCenteredString(
-                font,
+        float titleWidth = UiRenderer.measureText(title.getString(), font, TITLE_TEXT_SIZE).width();
+        float panelWidth =
+                Math.max(contentWidth, titleWidth + CLOSE_SIZE + 3 * padding) + 2 * padding;
+        float panelHeight = header + contentHeight + 2 * padding;
+        float panelX = (metrics.width() - panelWidth) / 2;
+        float panelY = (metrics.height() - panelHeight) / 2;
+        return new Layout(
+                panelX,
+                panelY,
+                panelWidth,
+                panelHeight,
+                panelX + (panelWidth - contentWidth) / 2,
+                panelY + header + padding,
+                contentWidth,
+                contentHeight);
+    }
+
+    private void drawPanel(
+            UiCanvas canvas, String font, Layout layout, boolean closeHovered, String status) {
+        float width = canvas.metrics().width(), height = canvas.metrics().height();
+        canvas.fillRect(0, 0, width, height, color(BACKGROUND_MODAL_OVERLAY));
+        canvas.fillRect(
+                layout.panelX(),
+                layout.panelY(),
+                layout.panelWidth(),
+                layout.panelHeight(),
+                color(BACKGROUND_BODY_OPAQUE));
+        canvas.fillRect(
+                layout.panelX(),
+                layout.panelY(),
+                layout.panelWidth(),
+                SequoiaUiStyle.HEADER_HEIGHT,
+                color(BACKGROUND_HEADER));
+        canvas.fillRect(
+                layout.panelX(),
+                layout.panelY() + SequoiaUiStyle.HEADER_HEIGHT - 1,
+                layout.panelWidth(),
+                1,
+                color(ACCENT_PRIMARY_DARK));
+        canvas.drawText(
+                title.getString(),
+                layout.panelX() + SequoiaUiStyle.CONTENT_PADDING,
+                layout.panelY() + SequoiaUiStyle.HEADER_HEIGHT / 2,
+                new UiCanvas.TextStyle(
+                        font,
+                        TITLE_TEXT_SIZE,
+                        color(ACCENT_PRIMARY_HOVER),
+                        UiCanvas.HorizontalAlign.LEFT,
+                        UiCanvas.VerticalAlign.MIDDLE));
+        canvas.fillRect(
+                layout.closeX(),
+                layout.closeY(),
+                CLOSE_SIZE,
+                CLOSE_SIZE,
+                color(closeHovered ? ACCENT_PRIMARY_DARK_HOVER : CONTROL_INPUT_HOVER));
+        canvas.drawText(
                 "x",
-                closeX + CLOSE / 2,
-                closeY + (CLOSE - font.lineHeight) / 2 + 1,
-                argb(closeHovered ? TEXT_PRIMARY : TEXT_SECONDARY));
-        int contentX = left + (panelW - contentW) / 2, contentY = top + HEADER + PADDING;
-        if (frames == null
-                || !ImagePreviews.draw(preview, graphics, contentX, contentY, contentW, contentH))
-            graphics.drawCenteredString(
-                    font,
-                    preview.status(System.nanoTime()),
-                    left + panelW / 2,
-                    contentY + (contentH - font.lineHeight) / 2,
-                    argb(TEXT_SECONDARY));
+                layout.closeX() + CLOSE_SIZE / 2,
+                layout.closeY() + CLOSE_SIZE / 2,
+                new UiCanvas.TextStyle(
+                        font,
+                        BODY_TEXT_SIZE,
+                        color(closeHovered ? TEXT_PRIMARY : TEXT_SECONDARY),
+                        UiCanvas.HorizontalAlign.CENTER,
+                        UiCanvas.VerticalAlign.MIDDLE));
+        if (status != null)
+            canvas.drawText(
+                    status,
+                    layout.contentX() + layout.contentWidth() / 2,
+                    layout.contentY() + layout.contentHeight() / 2,
+                    new UiCanvas.TextStyle(
+                            font,
+                            BODY_TEXT_SIZE,
+                            color(TEXT_SECONDARY),
+                            UiCanvas.HorizontalAlign.CENTER,
+                            UiCanvas.VerticalAlign.MIDDLE));
     }
 
-    private boolean overClose(double mouseX, double mouseY) {
-        return mouseX >= closeX
-                && mouseX < closeX + CLOSE
-                && mouseY >= closeY
-                && mouseY < closeY + CLOSE;
-    }
-
-    private static int argb(UiColor token) {
-        return color(token).getRGB();
+    @Override
+    public void renderMinecraftGuiOverlay(GuiGraphics graphics, UiRenderMetrics metrics) {
+        var shown = preview;
+        var current = layout;
+        if (shown == null || current == null || shown.frames() == null) return;
+        float guiUnitsPerUiUnit = metrics.pixelRatio() / (float) metrics.minecraftGuiScale();
+        ImagePreviews.draw(
+                shown,
+                graphics,
+                Math.round(current.contentX() * guiUnitsPerUiUnit),
+                Math.round(current.contentY() * guiUnitsPerUiUnit),
+                Math.max(1, Math.round(current.contentWidth() * guiUnitsPerUiUnit)),
+                Math.max(1, Math.round(current.contentHeight() * guiUnitsPerUiUnit)));
     }
 
     @Override
     public boolean mouseClicked(@NotNull MouseButtonEvent click, boolean doubleClick) {
-        if (click.button() == 0 && overClose(click.x(), click.y())) {
+        var current = layout;
+        if (click.button() == 0
+                && current != null
+                && current.overClose(
+                        MinecraftUiRenderer.mouseX(click.x()),
+                        MinecraftUiRenderer.mouseY(click.y()))) {
             onClose();
             return true;
         }

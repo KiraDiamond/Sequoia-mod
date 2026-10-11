@@ -124,7 +124,13 @@ final class MediaDownload {
                     fetch(
                             resolved,
                             (destination, limit, until) ->
-                                    request(client, destination, limit, until, cancellation),
+                                    request(
+                                            client,
+                                            destination,
+                                            limit,
+                                            until,
+                                            cancellation,
+                                            lease),
                             deadline);
             lease.release(MediaFormat.MAX_BYTES - body.length);
             return body;
@@ -195,7 +201,8 @@ final class MediaDownload {
             URI uri,
             int limit,
             long deadline,
-            MediaCancellation cancellation)
+            MediaCancellation cancellation,
+            ByteBudget.Lease lease)
             throws IOException {
         cancellation.check();
         checkDeadline(deadline);
@@ -222,11 +229,18 @@ final class MediaDownload {
                     if (encoding != null && !encoding.equalsIgnoreCase("identity"))
                         throw new IOException("Unsupported HTTP content encoding");
                     long declared = entity.getContentLength();
-                    if (declared > limit) throw new IOException("Media exceeds download limit");
-                    return new Reply(
-                            status,
-                            null,
-                            readLimited(entity.getContent(), limit, declared, deadline));
+                    // Without a length the body grows and is copied once, briefly holding up to
+                    // twice the limit; the fetch already reserved one limit.
+                    long growth = declared < 0 ? limit : 0;
+                    lease.reserve(growth);
+                    try {
+                        return new Reply(
+                                status,
+                                null,
+                                readLimited(entity.getContent(), limit, declared, deadline));
+                    } finally {
+                        lease.release(growth);
+                    }
                 } finally {
                     request.cancel();
                 } // Abort here: closing the response first may drain an oversized body.
@@ -242,8 +256,9 @@ final class MediaDownload {
     }
 
     /**
-     * Reads a body of at most {@code limit} bytes. A declared length is read into an exact
-     * array and must match; otherwise the body grows in chunks.
+     * Reads a body of at most {@code limit} bytes. A declared length (negative when unknown, as
+     * HttpEntity reports it) is read into an exact array and must match; otherwise the body grows
+     * in chunks.
      */
     static byte[] readLimited(InputStream stream, int limit, long declared, long deadline)
             throws IOException {

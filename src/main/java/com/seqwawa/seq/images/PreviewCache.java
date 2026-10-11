@@ -22,7 +22,8 @@ import java.util.function.LongSupplier;
  * Previews keyed by chat link. Owned by the render thread; workers only download and decode.
  *
  * <p>Three independent budgets bound memory: compressed frames of ready previews, bytes held by
- * loads still in progress, and GPU atlases. A preview drawn within the last second is active
+ * loads still in progress, and GPU atlases. A finished load's frames move from the in-flight
+ * budget to the retained one when the render thread installs them. A preview drawn within the last second is active
  * and is never evicted, so it cannot be dropped and fetched again while on screen.
  */
 final class PreviewCache {
@@ -49,7 +50,7 @@ final class PreviewCache {
                 throws Exception;
     }
 
-    /** One link's preview and the resources it owns. */
+    /** One link's preview and the resources it owns; each method is one lifecycle transition. */
     static final class Preview {
         final String key;
         final URI link;
@@ -69,10 +70,6 @@ final class PreviewCache {
             this.lastUsed = now;
         }
 
-        PreviewState state() {
-            return state;
-        }
-
         String status(long now) {
             return PreviewState.status(state, now);
         }
@@ -86,6 +83,62 @@ final class PreviewCache {
             return now - lastUsed < ACTIVE_NANOS;
         }
 
+        private void touch(long now) {
+            lastUsed = now;
+        }
+
+        private void started(FutureTask<Void> work, MediaCancellation workCancellation) {
+            task = work;
+            cancellation = workCancellation;
+        }
+
+        /** Shows frames that are still arriving, unless the load already ended. */
+        private void show(MediaFrames frames) {
+            if (state instanceof PreviewState.Loading) state = new PreviewState.Ready(frames);
+        }
+
+        /** @return bytes now charged to the retained budget */
+        private long complete(MediaFrames frames) {
+            task = null;
+            state = new PreviewState.Ready(frames);
+            retained = frames.bytes();
+            return retained;
+        }
+
+        /** @return the player to retire, if any */
+        private PreviewPlayer fail(PreviewState failure) {
+            task = null;
+            state = failure;
+            return detachPlayer();
+        }
+
+        /**
+         * Cancels any work and forgets the media.
+         *
+         * @return retained bytes released
+         */
+        private long release(ThreadPoolExecutor workers) {
+            if (cancellation != null) cancellation.cancel();
+            if (task != null) {
+                task.cancel(true);
+                workers.remove(task);
+                task = null;
+            }
+            state = new PreviewState.Failed(PreviewState.BLOCKED);
+            long freed = retained;
+            retained = 0;
+            return freed;
+        }
+
+        private void attach(PreviewPlayer created) {
+            player = created;
+        }
+
+        private PreviewPlayer detachPlayer() {
+            var detached = player;
+            player = null;
+            return detached;
+        }
     }
 
     private final LinkedHashMap<String, Preview> entries = new LinkedHashMap<>(16, 0.75f, true);
@@ -121,7 +174,7 @@ final class PreviewCache {
         URI source = BridgeMedia.resolve(link);
         Preview found = entries.get(key);
         if (found != null && source.equals(found.source)) {
-            found.lastUsed = now;
+            found.touch(now);
             return found;
         }
         // A delayed signed Discord URL changes the source; replace the stale preview.
@@ -136,78 +189,61 @@ final class PreviewCache {
     private void load(Preview preview) {
         var cancellation = new MediaCancellation();
         var task = new FutureTask<Void>(() -> run(preview, cancellation), null);
-        preview.cancellation = cancellation;
-        preview.task = task;
+        preview.started(task, cancellation);
         try {
             workers.execute(task);
         } catch (RejectedExecutionException busy) {
-            preview.task = null;
-            preview.state = new PreviewState.Failed(PreviewState.BUSY);
+            retire(preview.fail(new PreviewState.Failed(PreviewState.BUSY)));
         }
     }
 
     private void run(Preview preview, MediaCancellation cancellation) {
-        var lease = inFlight.open();
-        MediaFrames frames = null;
-        Exception failure = null;
-        try {
-            cancellation.check();
-            frames =
-                    loader.load(
-                            preview.link,
-                            cancellation,
-                            lease,
-                            first -> post(() -> show(preview, cancellation, first)));
-            cancellation.check();
-        } catch (Exception error) {
-            failure = error;
+        // The worker owns the lease: the client drops queued main-thread tasks while it
+        // disconnects, so releasing it from a posted task could leak the reservation.
+        try (var lease = inFlight.open()) {
+            MediaFrames frames = null;
+            Exception failure = null;
+            try {
+                cancellation.check();
+                frames =
+                        loader.load(
+                                preview.link,
+                                cancellation,
+                                lease,
+                                first -> post(() -> show(preview, cancellation, first)));
+                cancellation.check();
+            } catch (Exception error) {
+                failure = error;
+            }
+            if (cancellation.isCancelled()) return;
+            var loaded = frames;
+            var error = failure;
+            post(() -> finish(preview, cancellation, loaded, error));
         }
-        if (cancellation.isCancelled()) {
-            lease.close();
-            return;
-        }
-        var loaded = frames;
-        var error = failure;
-        if (!post(
-                () -> {
-                    try {
-                        finish(preview, cancellation, loaded, error);
-                    } finally {
-                        lease.close();
-                    }
-                })) lease.close();
     }
 
-    private boolean post(Runnable task) {
+    private void post(Runnable task) {
         try {
             mainThread.execute(task);
-            return true;
         } catch (RejectedExecutionException stopping) {
-            return false;
+            // The client is shutting down; the result is no longer needed.
         }
     }
 
     /** Starts showing an animation whose remaining frames are still being compressed. */
     private void show(Preview preview, MediaCancellation cancellation, MediaFrames frames) {
-        if (entries.get(preview.key) != preview
-                || cancellation.isCancelled()
-                || !(preview.state instanceof PreviewState.Loading)) return;
-        preview.state = new PreviewState.Ready(frames);
+        if (entries.get(preview.key) == preview && !cancellation.isCancelled()) preview.show(frames);
     }
 
     private void finish(
             Preview preview, MediaCancellation cancellation, MediaFrames frames, Exception error) {
         if (entries.get(preview.key) != preview || cancellation.isCancelled()) return;
-        preview.task = null;
         long now = now();
         if (error == null) {
-            preview.state = new PreviewState.Ready(frames);
-            preview.retained = frames.bytes();
-            retainedBytes += preview.retained;
+            retainedBytes += preview.complete(frames);
             trim(now);
         } else {
-            retirePlayer(preview);
-            preview.state = PreviewState.failedWith(error, now);
+            retire(preview.fail(PreviewState.failedWith(error, now)));
             LOG.debug("Image preview failed: {}", preview.status(now), error);
         }
     }
@@ -221,11 +257,12 @@ final class PreviewCache {
         long now = now();
         var frames = preview.frames();
         if (frames == null || entries.get(preview.key) != preview) return false;
-        preview.lastUsed = now;
+        preview.touch(now);
         try {
             if (preview.player == null) {
-                preview.player = new PreviewPlayer(frames, now);
-                textureBytes += preview.player.textureBytes();
+                var player = new PreviewPlayer(frames, now);
+                preview.attach(player);
+                textureBytes += player.textureBytes();
             }
             preview.player.draw(graphics, x, y, w, h, now);
             return true;
@@ -243,11 +280,12 @@ final class PreviewCache {
         for (var preview : entries.values())
             if (preview.player != null
                     && !preview.active(now)
-                    && now - preview.player.lastDrawn() > IDLE_TEXTURE_NANOS) retirePlayer(preview);
+                    && now - preview.player.lastDrawn() > IDLE_TEXTURE_NANOS)
+                retire(preview.detachPlayer());
         for (var iterator = entries.values().iterator();
                 textureBytes > TEXTURE_BYTES && iterator.hasNext(); ) {
             var preview = iterator.next();
-            if (preview.player != null && !preview.active(now)) retirePlayer(preview);
+            if (preview.player != null && !preview.active(now)) retire(preview.detachPlayer());
         }
         trim(now);
         closeRetiredPlayers();
@@ -271,23 +309,15 @@ final class PreviewCache {
     }
 
     private void release(Preview preview) {
-        retainedBytes -= preview.retained;
-        preview.retained = 0;
-        if (preview.cancellation != null) preview.cancellation.cancel();
-        if (preview.task != null) {
-            preview.task.cancel(true);
-            workers.remove(preview.task);
-            preview.task = null;
-        }
-        retirePlayer(preview);
-        preview.state = new PreviewState.Failed(PreviewState.BLOCKED);
+        retainedBytes -= preview.release(workers);
+        retire(preview.detachPlayer());
     }
 
-    private void retirePlayer(Preview preview) {
-        if (preview.player == null) return;
-        textureBytes -= preview.player.textureBytes();
-        retiredPlayers.add(preview.player);
-        preview.player = null;
+    /** Defers closing a player's texture to the next tick, outside rendering. */
+    private void retire(PreviewPlayer player) {
+        if (player == null) return;
+        textureBytes -= player.textureBytes();
+        retiredPlayers.add(player);
     }
 
     private void closeRetiredPlayers() {

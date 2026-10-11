@@ -44,6 +44,18 @@ final class PreviewCacheHarness implements AutoCloseable {
         return mainThread.size();
     }
 
+    /** Discards posted completions, as the client does while it disconnects. */
+    void dropMain() {
+        mainThread.clear();
+    }
+
+    /** Waits until every worker has returned its in-flight reservation. */
+    void awaitInFlightReleased() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (cache.inFlightBytes() != 0 && System.nanoTime() < deadline) Thread.sleep(5);
+        org.junit.jupiter.api.Assertions.assertEquals(0, cache.inFlightBytes());
+    }
+
     @Override
     public void close() throws InterruptedException {
         cache.clear();
