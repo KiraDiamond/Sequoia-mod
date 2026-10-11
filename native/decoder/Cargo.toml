@@ -1,0 +1,17 @@
+[package]
+name = "seqimages-decoder"
+version = "1.1.0"
+edition = "2024"
+license = "MIT"
+[dependencies]
+wasmtime = { version = "=49.0.2", default-features = false, features = ["std", "runtime"] }
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"
+[dev-dependencies]
+wasmtime = { version = "=49.0.2", default-features = false, features = ["std", "runtime", "cranelift"] }
+wat = "=1.245.1"
+[profile.release]
+strip = true
+panic = "abort"
+lto = "thin"
+codegen-units = 1

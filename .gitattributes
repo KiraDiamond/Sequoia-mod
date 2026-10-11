@@ -1,0 +1,4 @@
+# Preserve bundled dependency notices and source archives.
+src/main/resources/licenses/** -text linguist-vendored
+native/vendor/** -text linguist-vendored
+*.sh text eol=lf

@@ -122,3 +122,7 @@ runs/
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle-wrapper.jar
 /.devauth/microsoft_accounts.json
+
+# Image decoder build output
+native/decoder/target/
+__pycache__/
