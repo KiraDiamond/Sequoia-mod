@@ -1,12 +1,25 @@
-mod os;
+//! Sequoia Images decoder helper.
+//!
+//! The helper prepares the fixed FFmpeg decoder inside Wasmtime and applies the OS sandbox
+//! before it reads anything, so it can start while the caller is still downloading. Stdin then
+//! carries a big-endian `u32` length and that many media bytes, which are read straight into
+//! guest memory; stdout returns the validated pixel stream described in [`validate`].
+
+use seqimages_decoder::{engine, sandbox};
 use std::io::{Read, Write};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
+use std::ops::Range;
+use std::process::ExitCode;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+use wasmtime::{Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc};
+
 const MAX_INPUT: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT: usize = 48_001_616;
+const MAGIC: u32 = 0x5349_4d31;
+const DECODE_DEADLINE: Duration = Duration::from_secs(15);
+const FUEL: u64 = 10_000_000_000;
+
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 const AOT: &[u8] = include_bytes!("../../wasm/windows-x86_64.cwasm");
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
@@ -19,19 +32,13 @@ const AOT: &[u8] = include_bytes!("../../wasm/linux-aarch64.cwasm");
 const AOT: &[u8] = include_bytes!("../../wasm/macos-x86_64.cwasm");
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const AOT: &[u8] = include_bytes!("../../wasm/macos-aarch64.cwasm");
+
 struct State {
     limits: StoreLimits,
 }
-fn engine() -> wasmtime::Result<Engine> {
-    let mut c = Config::new();
-    c.consume_fuel(true)
-        .epoch_interruption(true)
-        .max_wasm_stack(512 * 1024);
-    c.wasm_memory64(false).wasm_multi_memory(false);
-    Engine::new(&c)
-}
+
 fn store(engine: &Engine) -> wasmtime::Result<Store<State>> {
-    let mut s = Store::new(
+    let mut store = Store::new(
         engine,
         State {
             limits: StoreLimitsBuilder::new()
@@ -44,11 +51,12 @@ fn store(engine: &Engine) -> wasmtime::Result<Store<State>> {
                 .build(),
         },
     );
-    s.limiter(|s| &mut s.limits);
-    s.set_fuel(10_000_000_000)?;
-    s.set_epoch_deadline(1);
-    Ok(s)
+    store.limiter(|state| &mut state.limits);
+    store.set_fuel(FUEL)?;
+    store.set_epoch_deadline(1);
+    Ok(store)
 }
+
 fn restricted_linker(e: &Engine) -> wasmtime::Result<Linker<State>> {
     let mut linker = Linker::new(e);
     // Satisfy libc imports without exposing the host filesystem or network.
@@ -142,23 +150,22 @@ fn restricted_linker(e: &Engine) -> wasmtime::Result<Linker<State>> {
 
     Ok(linker)
 }
+
+/// Checks the pixel stream: `MAGIC, width, height, count`, then per frame a duration in
+/// milliseconds and `width * height` ARGB pixels, all big-endian, with nothing after.
 fn validate(bytes: &[u8]) -> Result<(), String> {
-    fn value(b: &[u8], at: usize) -> Result<u32, String> {
-        Ok(u32::from_be_bytes(
-            b.get(at..at + 4)
-                .ok_or("truncated pixels")?
-                .try_into()
-                .unwrap(),
-        ))
+    fn value(bytes: &[u8], at: usize) -> Result<usize, String> {
+        let word = at
+            .checked_add(4)
+            .and_then(|end| bytes.get(at..end))
+            .and_then(|word| <[u8; 4]>::try_from(word).ok())
+            .ok_or("truncated pixels")?;
+        Ok(u32::from_be_bytes(word) as usize)
     }
-    if bytes.len() < 16 || bytes.len() > MAX_OUTPUT || value(bytes, 0)? != 0x53494d31 {
+    if bytes.len() < 16 || bytes.len() > MAX_OUTPUT || value(bytes, 0)? != MAGIC as usize {
         return Err("invalid pixel header".into());
     }
-    let (w, h, n) = (
-        value(bytes, 4)? as usize,
-        value(bytes, 8)? as usize,
-        value(bytes, 12)? as usize,
-    );
+    let (w, h, n) = (value(bytes, 4)?, value(bytes, 8)?, value(bytes, 12)?);
     if w == 0 || h == 0 || w > 256 || h > 256 || n == 0 || n > 400 || w * h * n > 12_000_000 {
         return Err("invalid pixel bounds".into());
     }
@@ -166,105 +173,194 @@ fn validate(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() != 16 + n * stride {
         return Err("invalid pixel length".into());
     }
-    for i in 0..n {
-        let ms = value(bytes, 16 + i * stride)?;
-        if ms == 0 || ms > 655350 {
+    for frame in 0..n {
+        let ms = value(bytes, 16 + frame * stride)?;
+        if ms == 0 || ms > 655_350 {
             return Err("invalid pixel timing".into());
         }
     }
     Ok(())
 }
-fn decode(input: &[u8]) -> wasmtime::Result<Vec<u8>> {
-    if input.is_empty() || input.len() > MAX_INPUT {
-        return Err(wasmtime::Error::msg("input budget"));
+
+/// Loads the decoder that `examples/precompile.rs` compiled ahead of time for this platform.
+///
+/// # Errors
+///
+/// Returns an error if the artifact was produced by another Wasmtime version or configuration.
+fn load_decoder(engine: &Engine) -> wasmtime::Result<Module> {
+    // SAFETY: `Module::deserialize` trusts its input to be Wasmtime's own compiler output. The
+    // only input here is `AOT`, embedded at build time from the bundled artifact compiled from
+    // the fixed decoder.wasm with `engine::config()`; this function never sees media or other
+    // runtime bytes. Wasmtime still checks that the artifact matches this engine's version and
+    // settings, which the `embedded_decoder_matches_the_runtime_engine` test exercises.
+    unsafe { Module::deserialize(engine, AOT) }
+}
+
+/// The instantiated decoder, ready to receive media.
+struct Decoder {
+    store: Store<State>,
+    memory: Memory,
+    allocate_input: TypedFunc<i32, i32>,
+    decode_media: TypedFunc<(i32, i32), i32>,
+    output_ptr: TypedFunc<(), i32>,
+    output_len: TypedFunc<(), i32>,
+}
+
+impl Decoder {
+    fn new(engine: &Engine, module: &Module) -> wasmtime::Result<Self> {
+        let mut store = store(engine)?;
+        let instance = restricted_linker(engine)?.instantiate(&mut store, module)?;
+        if let Some(init) = instance.get_func(&mut store, "_initialize") {
+            init.typed::<(), ()>(&store)?.call(&mut store, ())?;
+        }
+        Ok(Self {
+            memory: instance
+                .get_memory(&mut store, "memory")
+                .ok_or_else(|| wasmtime::Error::msg("missing memory"))?,
+            allocate_input: instance.get_typed_func(&mut store, "allocate_input")?,
+            decode_media: instance.get_typed_func(&mut store, "decode_media")?,
+            output_ptr: instance.get_typed_func(&mut store, "output_ptr")?,
+            output_len: instance.get_typed_func(&mut store, "output_len")?,
+            store,
+        })
     }
-    let e = engine()?;
-    // SAFETY: AOT is immutable, bundled output from the fixed decoder.wasm, compiled
-    // with the same Wasmtime version and engine settings. Never deserialize downloaded bytes.
-    let m = unsafe { Module::deserialize(&e, AOT) }?;
-    let mut s = store(&e)?;
-    let linker = restricted_linker(&e)?;
-    let instance = linker.instantiate(&mut s, &m)?;
-    let mem = instance
-        .get_memory(&mut s, "memory")
-        .ok_or_else(|| wasmtime::Error::msg("missing memory"))?;
-    let alloc = instance.get_typed_func::<i32, i32>(&mut s, "allocate_input")?;
-    let run = instance.get_typed_func::<(i32, i32), i32>(&mut s, "decode_media")?;
-    let output_ptr = instance.get_typed_func::<(), i32>(&mut s, "output_ptr")?;
-    let output_len = instance.get_typed_func::<(), i32>(&mut s, "output_len")?;
-    let finished = Arc::new(AtomicBool::new(false));
-    let done = finished.clone();
-    let ticker = std::thread::spawn(move || {
-        for _ in 0..1500 {
-            if done.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+
+    /// Reads one length-prefixed media file from `input` straight into guest memory and
+    /// returns its guest address and length.
+    fn receive(&mut self, input: &mut impl Read) -> wasmtime::Result<(i32, i32)> {
+        let mut header = [0; 4];
+        input.read_exact(&mut header)?;
+        let len = u32::from_be_bytes(header) as usize;
+        if len == 0 || len > MAX_INPUT {
+            return Err(wasmtime::Error::msg("input budget"));
         }
-        e.increment_epoch();
-    });
-    os::restrict()?;
-    let result = (|| -> wasmtime::Result<Vec<u8>> {
-        if let Some(init) = instance.get_func(&mut s, "_initialize") {
-            init.typed::<(), ()>(&s)?.call(&mut s, ())?;
-        }
-        let ptr = alloc.call(&mut s, input.len() as i32)? as u32 as usize;
+        let guest_len = i32::try_from(len)?;
+        let ptr = self.allocate_input.call(&mut self.store, guest_len)? as u32 as usize;
         if ptr == 0 {
             return Err(wasmtime::Error::msg("allocation failed"));
         }
-        mem.write(&mut s, ptr, input)?;
-        if run.call(&mut s, (ptr as i32, input.len() as i32))? != 0 {
+        let target = ptr
+            .checked_add(len)
+            .and_then(|end| self.memory.data_mut(&mut self.store).get_mut(ptr..end))
+            .ok_or_else(|| wasmtime::Error::msg("input range"))?;
+        input.read_exact(target)?;
+        if input.read(&mut [0; 1])? != 0 {
+            return Err(wasmtime::Error::msg("extra input"));
+        }
+        Ok((i32::try_from(ptr)?, guest_len))
+    }
+
+    /// Decodes received media and returns the guest range holding the pixel stream.
+    fn decode(&mut self, (ptr, len): (i32, i32)) -> wasmtime::Result<Range<usize>> {
+        if self.decode_media.call(&mut self.store, (ptr, len))? != 0 {
             return Err(wasmtime::Error::msg("media rejected"));
         }
-        let ptr = output_ptr.call(&mut s, ())? as u32 as usize;
-        let len = output_len.call(&mut s, ())? as u32 as usize;
+        let start = self.output_ptr.call(&mut self.store, ())? as u32 as usize;
+        let len = self.output_len.call(&mut self.store, ())? as u32 as usize;
         if !(16..=MAX_OUTPUT).contains(&len) {
             return Err(wasmtime::Error::msg("output budget"));
         }
-        let end = ptr
+        let end = start
             .checked_add(len)
             .ok_or_else(|| wasmtime::Error::msg("output overflow"))?;
-        let bytes = mem
-            .data(&s)
-            .get(ptr..end)
-            .ok_or_else(|| wasmtime::Error::msg("output range"))?
-            .to_vec();
-        validate(&bytes).map_err(wasmtime::Error::msg)?;
-        Ok(bytes)
-    })();
-    finished.store(true, Ordering::Relaxed);
-    let _ = ticker.join();
-    result
-}
-fn main() {
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut stream = std::io::stdin().lock();
-        let mut header = [0; 4];
-        stream.read_exact(&mut header)?;
-        let len = u32::from_be_bytes(header) as usize;
-        if len == 0 || len > MAX_INPUT {
-            return Err("input budget".into());
-        }
-        let mut bytes = vec![0; len];
-        stream.read_exact(&mut bytes)?;
-        let mut extra = [0; 1];
-        if stream.read(&mut extra)? != 0 {
-            return Err("extra input".into());
-        }
-        let pixels = decode(&bytes)?;
-        let mut out = std::io::stdout().lock();
-        out.write_all(&pixels)?;
-        out.flush()?;
-        Ok(())
-    })();
-    if let Err(e) = result {
-        eprintln!("Image could not be decoded within safety limits: {e}");
-        std::process::exit(1)
+        Ok(start..end)
+    }
+
+    fn bytes(&self, range: Range<usize>) -> wasmtime::Result<&[u8]> {
+        self.memory
+            .data(&self.store)
+            .get(range)
+            .ok_or_else(|| wasmtime::Error::msg("output range"))
     }
 }
+
+/// Interrupts guest code [`DECODE_DEADLINE`] after decoding begins.
+///
+/// The thread is started before the sandbox, which forbids creating threads, and waits for a
+/// start signal so the deadline does not include time spent waiting for the caller's download.
+struct Deadline {
+    signal: Option<mpsc::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Deadline {
+    fn spawn(engine: Engine) -> Self {
+        let (signal, events) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            if events.recv().is_ok()
+                && matches!(
+                    events.recv_timeout(DECODE_DEADLINE),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                )
+            {
+                engine.increment_epoch();
+            }
+        });
+        Self {
+            signal: Some(signal),
+            thread: Some(thread),
+        }
+    }
+
+    fn begin(&self) {
+        if let Some(signal) = &self.signal {
+            // A send can only fail if the thread is gone, in which case nothing can expire.
+            let _ = signal.send(());
+        }
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        // Disconnecting ends the wait without interrupting anything.
+        self.signal = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = engine::engine()?;
+    let module = load_decoder(&engine)?;
+    let mut decoder = Decoder::new(&engine, &module)?;
+    let deadline = Deadline::spawn(engine.clone());
+    // Nothing untrusted has been read yet; everything after this line is confined.
+    sandbox::restrict()?;
+    let input = decoder.receive(&mut std::io::stdin().lock())?;
+    deadline.begin();
+    let output = decoder.decode(input);
+    drop(deadline);
+    let pixels = decoder.bytes(output?)?;
+    validate(pixels)?;
+    let mut out = std::io::stdout().lock();
+    out.write_all(pixels)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Image could not be decoded within safety limits: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ONE_PIXEL_PNG: [u8; 69] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xf0, 0x1f, 0x00, 0x04, 0x00, 0x01, 0xff, 0x22, 0x0a, 0x3a, 0xf0, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
     #[test]
     fn protocol_rejects_overflow_truncation_and_extra_bytes() {
         assert!(validate(&[0; 16]).is_err());
@@ -276,9 +372,41 @@ mod tests {
         b.push(0);
         assert!(validate(&b).is_err());
     }
+
+    #[test]
+    fn embedded_decoder_matches_the_runtime_engine() {
+        let engine = engine::engine().unwrap();
+        load_decoder(&engine).expect("bundled AOT must match engine::config()");
+    }
+
+    #[test]
+    fn embedded_decoder_streams_media_in_and_pixels_out() {
+        let engine = engine::engine().unwrap();
+        let module = load_decoder(&engine).unwrap();
+        let mut decoder = Decoder::new(&engine, &module).unwrap();
+        let mut input = (ONE_PIXEL_PNG.len() as u32).to_be_bytes().to_vec();
+        input.extend(ONE_PIXEL_PNG);
+        let received = decoder.receive(&mut input.as_slice()).unwrap();
+        let range = decoder.decode(received).unwrap();
+        let pixels = decoder.bytes(range).unwrap();
+        validate(pixels).unwrap();
+        assert_eq!(&pixels[4..16], &[0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn trailing_input_is_rejected_before_decoding() {
+        let engine = engine::engine().unwrap();
+        let module = load_decoder(&engine).unwrap();
+        let mut decoder = Decoder::new(&engine, &module).unwrap();
+        let mut input = (ONE_PIXEL_PNG.len() as u32).to_be_bytes().to_vec();
+        input.extend(ONE_PIXEL_PNG);
+        input.push(0);
+        assert!(decoder.receive(&mut input.as_slice()).is_err());
+    }
+
     #[test]
     fn infinite_loop_exhausts_fuel() {
-        let e = engine().unwrap();
+        let e = engine::engine().unwrap();
         let m = Module::new(
             &e,
             wat::parse_str("(module (func (export \"run\") (loop br 0)))").unwrap(),
@@ -294,10 +422,18 @@ mod tests {
                 .is_err()
         );
     }
+
     #[test]
     fn memory_growth_is_bounded() {
-        let e = engine().unwrap();
-        let m=Module::new(&e,wat::parse_str("(module (memory 1) (func (export \"run\") (result i32) i32.const 4000 memory.grow))").unwrap()).unwrap();
+        let e = engine::engine().unwrap();
+        let m = Module::new(
+            &e,
+            wat::parse_str(
+                "(module (memory 1) (func (export \"run\") (result i32) i32.const 4000 memory.grow))",
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let mut s = store(&e).unwrap();
         let i = wasmtime::Instance::new(&mut s, &m, &[]).unwrap();
         assert!(
@@ -307,9 +443,10 @@ mod tests {
                 .is_err()
         );
     }
+
     #[test]
     fn filesystem_import_cannot_instantiate() {
-        let e = engine().unwrap();
+        let e = engine::engine().unwrap();
         let m = Module::new(
             &e,
             wat::parse_str("(module (import \"wasi_snapshot_preview1\" \"path_open\" (func)))")
@@ -327,7 +464,7 @@ mod tests {
 
     #[test]
     fn filesystem_calls_are_inert() {
-        let e = engine().unwrap();
+        let e = engine::engine().unwrap();
         let mut s = store(&e).unwrap();
         let l = restricted_linker(&e).unwrap();
         let f = l
@@ -340,9 +477,10 @@ mod tests {
             .unwrap();
         assert_eq!(76, f.call(&mut s, (3, 0, 0, 0, 0, 0, 0, 0, 0)).unwrap());
     }
+
     #[test]
     fn network_import_is_unavailable() {
-        let e = engine().unwrap();
+        let e = engine::engine().unwrap();
         let m = Module::new(
             &e,
             wat::parse_str("(module (import \"wasi_snapshot_preview1\" \"sock_open\" (func)))")
@@ -357,9 +495,10 @@ mod tests {
                 .is_err()
         );
     }
+
     #[test]
     fn external_deadline_interrupts_a_loop() {
-        let e = engine().unwrap();
+        let e = engine::engine().unwrap();
         let m = Module::new(
             &e,
             wat::parse_str("(module (func (export \"run\") (loop br 0)))").unwrap(),

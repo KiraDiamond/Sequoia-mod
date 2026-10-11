@@ -1,162 +1,134 @@
-// Install seccomp after runtime setup, before parsing media.
-#[cfg(target_os = "linux")]
-pub fn restrict() -> Result<(), std::io::Error> {
-    use libc::*;
-    #[cfg(target_arch = "x86_64")]
-    const AUDIT_ARCH: u32 = 0xc000003e;
-    #[cfg(target_arch = "aarch64")]
-    const AUDIT_ARCH: u32 = 0xc00000b7;
-    unsafe {
-        let cpu = rlimit {
-            rlim_cur: 20,
-            rlim_max: 20,
-        };
-        let zero = rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if setrlimit(RLIMIT_CPU, &cpu) != 0
-            || setrlimit(RLIMIT_FSIZE, &zero) != 0
-            || setrlimit(RLIMIT_CORE, &zero) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        // Check the syscall architecture first; numbers differ between x86-64 and ARM64.
-        // Allow runtime memory, signals, timers, synchronization and existing pipe I/O only.
-        let mut f = vec![
-            sock_filter {
-                code: 0x20,
-                jt: 0,
-                jf: 0,
-                k: 4,
-            },
-            sock_filter {
-                code: 0x15,
-                jt: 1,
-                jf: 0,
-                k: AUDIT_ARCH,
-            },
-            sock_filter {
-                code: 0x06,
-                jt: 0,
-                jf: 0,
-                k: 0x80000000,
-            },
-            sock_filter {
-                code: 0x20,
-                jt: 0,
-                jf: 0,
-                k: 0,
-            },
-        ];
-        for n in [
-            SYS_read,
-            SYS_write,
-            SYS_readv,
-            SYS_writev,
-            SYS_close,
-            SYS_fstat,
-            SYS_lseek,
-            SYS_mmap,
-            SYS_mprotect,
-            SYS_munmap,
-            SYS_madvise,
-            SYS_brk,
-            SYS_mremap,
-            SYS_rt_sigaction,
-            SYS_rt_sigprocmask,
-            SYS_rt_sigreturn,
-            SYS_sigaltstack,
-            SYS_futex,
-            SYS_sched_yield,
-            SYS_clock_gettime,
-            SYS_clock_nanosleep,
-            SYS_nanosleep,
-            SYS_getpid,
-            SYS_gettid,
-            SYS_getrandom,
-            SYS_restart_syscall,
-            SYS_exit,
-            SYS_exit_group,
-            SYS_set_robust_list,
-            SYS_rseq,
-        ] {
-            f.push(sock_filter {
-                code: 0x15,
-                jt: 0,
-                jf: 1,
-                k: n as u32,
-            });
-            f.push(sock_filter {
-                code: 0x06,
-                jt: 0,
-                jf: 0,
-                k: 0x7fff0000,
-            });
-        }
-        f.push(sock_filter {
-            code: 0x06,
-            jt: 0,
-            jf: 0,
-            k: 0x00050000 | EPERM as u32,
-        });
-        let p = sock_fprog {
-            len: f.len() as u16,
-            filter: f.as_mut_ptr(),
-        };
-        if prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let result = syscall(SYS_seccomp, 1, 1, &p as *const sock_fprog);
-        if result != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-#[cfg(target_os = "windows")]
-pub fn restrict() -> Result<(), std::io::Error> {
+//! OS sandbox for the decoder process, applied after Wasmtime setup and before media is read.
+//!
+//! After [`restrict`] the process can still use memory, threads it already started, timers and
+//! the pipes it inherited, but cannot open files, create sockets or start processes. Windows
+//! applies the equivalent restrictions from outside, through an AppContainer broker.
+
+/// CPU seconds the decoder may consume before the kernel stops it.
+#[cfg(unix)]
+const CPU_SECONDS: u64 = 20;
+
+#[cfg(unix)]
+fn limit_resources() -> std::io::Result<()> {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    let limit = |seconds| Rlimit {
+        current: Some(seconds),
+        maximum: Some(seconds),
+    };
+    setrlimit(Resource::Cpu, limit(CPU_SECONDS))?;
+    // No file may grow and no core dump may be written.
+    setrlimit(Resource::Fsize, limit(0))?;
+    setrlimit(Resource::Core, limit(0))?;
     Ok(())
 }
 
-// Apply Seatbelt after runtime setup so decoding can still use the existing pipes.
-// Deny new file access, sockets and subprocesses.
+/// Applies resource limits and a seccomp allowlist to every thread of the process.
+///
+/// # Errors
+///
+/// Returns an error if the kernel refuses a limit or the filter; the caller must then exit
+/// without reading media.
+#[cfg(target_os = "linux")]
+pub fn restrict() -> std::io::Result<()> {
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
+    use std::collections::BTreeMap;
+
+    // Runtime memory, signals, timers, synchronization and I/O on existing descriptors only.
+    const ALLOWED: &[libc::c_long] = &[
+        libc::SYS_read,
+        libc::SYS_write,
+        libc::SYS_readv,
+        libc::SYS_writev,
+        libc::SYS_close,
+        libc::SYS_fstat,
+        libc::SYS_lseek,
+        libc::SYS_mmap,
+        libc::SYS_mprotect,
+        libc::SYS_munmap,
+        libc::SYS_madvise,
+        libc::SYS_brk,
+        libc::SYS_mremap,
+        libc::SYS_rt_sigaction,
+        libc::SYS_rt_sigprocmask,
+        libc::SYS_rt_sigreturn,
+        libc::SYS_sigaltstack,
+        libc::SYS_futex,
+        libc::SYS_sched_yield,
+        libc::SYS_clock_gettime,
+        libc::SYS_clock_nanosleep,
+        libc::SYS_nanosleep,
+        libc::SYS_getpid,
+        libc::SYS_gettid,
+        libc::SYS_getrandom,
+        libc::SYS_restart_syscall,
+        libc::SYS_exit,
+        libc::SYS_exit_group,
+        libc::SYS_set_robust_list,
+        libc::SYS_rseq,
+    ];
+
+    limit_resources()?;
+    let arch = TargetArch::try_from(std::env::consts::ARCH).map_err(std::io::Error::other)?;
+    let rules = ALLOWED
+        .iter()
+        .map(|&call| (call, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    // Another architecture's syscall numbers kill the process; anything unlisted gets EPERM.
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Errno(libc::EPERM as u32),
+        SeccompAction::Allow,
+        arch,
+    )
+    .map_err(std::io::Error::other)?;
+    let program = BpfProgram::try_from(filter).map_err(std::io::Error::other)?;
+    // TSYNC also covers the deadline thread, which is started before this point.
+    seccompiler::apply_filter_all_threads(&program).map_err(std::io::Error::other)
+}
+
+/// Applies resource limits and a deny-by-default Seatbelt profile.
+///
+/// # Errors
+///
+/// Returns an error if a limit or the profile cannot be applied.
 #[cfg(target_os = "macos")]
-pub fn restrict() -> Result<(), std::io::Error> {
-    use libc::*;
-    use std::ffi::CStr;
+pub fn restrict() -> std::io::Result<()> {
+    use std::ffi::{CStr, c_char, c_int};
+
     #[link(name = "sandbox")]
     unsafe extern "C" {
         fn sandbox_init(profile: *const c_char, flags: u64, error: *mut *mut c_char) -> c_int;
         fn sandbox_free_error(error: *mut c_char);
     }
-    unsafe {
-        let cpu = rlimit {
-            rlim_cur: 20,
-            rlim_max: 20,
-        };
-        let zero = rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if setrlimit(RLIMIT_CPU, &cpu) != 0
-            || setrlimit(RLIMIT_FSIZE, &zero) != 0
-            || setrlimit(RLIMIT_CORE, &zero) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        let profile = c"(version 1)(deny default)(allow signal (target self))";
-        let mut error = std::ptr::null_mut();
-        if sandbox_init(profile.as_ptr(), 0, &mut error) != 0 {
-            let message = if error.is_null() {
-                "Seatbelt unavailable".into()
-            } else {
-                let text = CStr::from_ptr(error).to_string_lossy().into_owned();
-                sandbox_free_error(error);
-                text
-            };
-            return Err(std::io::Error::other(message));
-        }
+
+    limit_resources()?;
+    let profile = c"(version 1)(deny default)(allow signal (target self))";
+    let mut error: *mut c_char = std::ptr::null_mut();
+    // SAFETY: `profile` is a NUL-terminated static string, flags 0 selects a literal profile,
+    // and `error` is a valid out-pointer that libsandbox sets to null or to a C string it owns.
+    let status = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error) };
+    if status == 0 {
+        return Ok(());
     }
+    if error.is_null() {
+        return Err(std::io::Error::other("Seatbelt unavailable"));
+    }
+    // SAFETY: on failure libsandbox returned a NUL-terminated message that stays valid until
+    // `sandbox_free_error`, which is called exactly once after the message is copied.
+    let message = unsafe {
+        let text = CStr::from_ptr(error).to_string_lossy().into_owned();
+        sandbox_free_error(error);
+        text
+    };
+    Err(std::io::Error::other(message))
+}
+
+/// Windows confinement is applied by the AppContainer broker that starts this process.
+///
+/// # Errors
+///
+/// Never fails.
+#[cfg(target_os = "windows")]
+pub fn restrict() -> std::io::Result<()> {
     Ok(())
 }
