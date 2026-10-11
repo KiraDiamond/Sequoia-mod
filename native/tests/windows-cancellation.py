@@ -35,6 +35,8 @@ class ProcessEntry(ctypes.Structure):
                 ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
 
 
+kernel.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
 broker, paused_broker, helper = (pathlib.Path(value).resolve() for value in sys.argv[1:4])
 leases = pathlib.Path(os.environ["LOCALAPPDATA"]) / "SequoiaImages" / "leases"
 packages = pathlib.Path(os.environ["LOCALAPPDATA"]) / "Packages"
@@ -49,11 +51,11 @@ def children(parent):
     entry, found = ProcessEntry(), []
     entry.dwSize = ctypes.sizeof(entry)
     try:
-        ok = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        ok = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
         while ok:
             if entry.th32ParentProcessID == parent:
                 found.append(entry.th32ProcessID)
-            ok = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            ok = kernel.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         kernel.CloseHandle(snapshot)
     return found
@@ -78,11 +80,14 @@ def profiles():
 
 
 def app_container_aces(path):
-    script = ("(Get-Acl -LiteralPath $args[0]).GetAccessRules($true,$false,"
+    """Explicit ACL entries for AppContainer SIDs (S-1-15-2-...) on one file."""
+    script = ("(Get-Acl -LiteralPath $env:SEQIMAGES_ACL_PATH).GetAccessRules($true,$false,"
               "[System.Security.Principal.SecurityIdentifier]) | "
               "ForEach-Object { $_.IdentityReference.Value }")
-    result = subprocess.run(["powershell", "-NoProfile", "-Command", script, str(path)],
-                            capture_output=True, text=True, timeout=60, check=True)
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                            env={**os.environ, "SEQIMAGES_ACL_PATH": str(path)},
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, ("Get-Acl failed", result.stderr)
     return sorted(s for s in result.stdout.split() if s.startswith("S-1-15-2-"))
 
 
