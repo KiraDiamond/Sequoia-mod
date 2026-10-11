@@ -260,6 +260,7 @@ final class PreviewCache {
         preview.touch(now);
         try {
             if (preview.player == null) {
+                makeTextureRoom(preview, FrameAtlas.of(frames).bytes());
                 var player = new PreviewPlayer(frames, now);
                 preview.attach(player);
                 textureBytes += player.textureBytes();
@@ -270,6 +271,24 @@ final class PreviewCache {
             LOG.debug("Image preview could not be displayed", failure);
             release(preview);
             return false;
+        }
+    }
+
+    /**
+     * Retires other previews' atlases, least recently drawn first, until {@code bytes} more fit
+     * the texture budget. Retired textures close on the next tick, after this frame renders.
+     */
+    private void makeTextureRoom(Preview drawing, long bytes) {
+        while (textureBytes + bytes > TEXTURE_BYTES) {
+            Preview oldest = null;
+            for (var preview : entries.values())
+                if (preview != drawing
+                        && preview.player != null
+                        && (oldest == null
+                                || preview.player.lastDrawn() < oldest.player.lastDrawn()))
+                    oldest = preview;
+            if (oldest == null) return;
+            retire(oldest.detachPlayer());
         }
     }
 

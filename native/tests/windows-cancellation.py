@@ -180,7 +180,15 @@ for attempt in range(5):
         assert state() == baseline, ("graceful cancel left state", state(), baseline)
 print("GRACEFUL_CANCEL_OK: 5 cancels; decoder exited; profiles, ACEs and leases restored")
 
-leaked = 0
+def outstanding():
+    """Profiles, helper ACEs and leases beyond the baseline."""
+    current = state()
+    return tuple(len(current[key]) - len(baseline[key]) for key in ("profiles", "aces", "leases"))
+
+
+# Every broker sweeps what brokers killed before it left behind, so after each kill exactly the
+# latest killed broker's profile, file grant and lease remain.
+kills = 0
 for attempt in range(3):
     with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
         process = start(paused_broker, pathlib.Path(temp))
@@ -190,7 +198,8 @@ for attempt in range(3):
         process.kill()
         process.communicate(timeout=10)
         assert wait_dead(child), "killing the broker orphaned its suspended decoder"
-        leaked += 1
+        kills += 1
+        assert outstanding() == (1, 1, 1), ("after kill", kills, outstanding())
 for attempt in range(2):
     with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
         process = start(broker, pathlib.Path(temp))
@@ -198,10 +207,9 @@ for attempt in range(2):
         process.kill()
         process.communicate(timeout=10)
         assert wait_dead(child), "killing the broker orphaned its running decoder"
-        leaked += 1
-after_kills = state()
-assert len(after_kills["leases"]) == len(baseline["leases"]) + leaked, after_kills
-print(f"HARD_KILL_OK: {leaked} killed brokers; decoders exited; {leaked} leases recorded the leftover state")
+        kills += 1
+        assert outstanding() == (1, 1, 1), ("after kill", kills, outstanding())
+print(f"HARD_KILL_OK: {kills} killed brokers; decoders exited; each next broker swept the previous leftovers")
 
 with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
     process = start(broker, pathlib.Path(temp))
