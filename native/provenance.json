@@ -72,16 +72,16 @@
       "sha256": "82df0510631e1d4af70e2c37229f779f298185fcffeb53122b4f488429f19615"
     },
     "src/main/resources/sandbox/windows-aarch64/sandbox.exe": {
-      "bytes": 245248,
-      "sha256": "292e0bb322603ae85b2eeae749b825d17a73e40197333c82171acde5f6258de9"
+      "bytes": 232448,
+      "sha256": "20e9a91d993cff381d9ebc1eae4d246f77e5e15582e2ca9272c5c897a231778f"
     },
     "src/main/resources/sandbox/windows-aarch64/seqimages-decoder.exe": {
       "bytes": 7674880,
       "sha256": "9e52e2b37bdb20640ed14050c35ab4ba3e736ed15803161492d5308249b6c893"
     },
     "src/main/resources/sandbox/windows-x86_64/sandbox.exe": {
-      "bytes": 252928,
-      "sha256": "26139bbe9cf72d704d7a22fead9a567d016ff909eb9a2fc918f6a512c6058257"
+      "bytes": 247296,
+      "sha256": "2a56d034042584080d6c8e2f164e9205b55a4e43db56fbd34c5d16a1c4c013db"
     },
     "src/main/resources/sandbox/windows-x86_64/seqimages-decoder.exe": {
       "bytes": 9969664,
@@ -92,5 +92,27 @@
     "source_commit": "271ffe88a6b96d651efbc7f8b06eb2f9ba4f3533",
     "run": "https://github.com/KiraDiamond/SeqImageMod/actions/runs/38150742619",
     "validation_receipts": "native/tests/platforms/"
+  },
+  "windows_broker_build": {
+    "source": "native/sandbox.cpp",
+    "source_sha256": "4482375ce24fa167c4ce8a11c9ba7c213eef22e4b74e71184f8e531a236dbecf",
+    "compiler": "MSVC, static CRT, Windows x86-64 host",
+    "targets": [
+      "windows-x86_64",
+      "windows-aarch64"
+    ],
+    "validation": {
+      "windows-x86_64": [
+        "exact decoded pixels",
+        "OS sandbox denials",
+        "malformed input rejection",
+        "cancellation before child resume"
+      ],
+      "windows-aarch64": [
+        "cross-compiled",
+        "PE architecture verified; execution requires an ARM64 Windows runner"
+      ]
+    },
+    "cancellation_regression": "native/tests/windows-cancellation.py"
   }
 }

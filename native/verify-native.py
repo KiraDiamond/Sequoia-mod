@@ -14,6 +14,7 @@ with tempfile.TemporaryDirectory(prefix="seqimages-native-test-") as temp:
  digest=hashlib.sha256(result.stdout).hexdigest();assert digest==expected,(name,digest,len(result.stdout))
  elapsed=time.perf_counter()-start
  denials=None
+ cancellation=None
  if windows:
   sentinel=scratch/"sentinel";sentinel.write_bytes(b"marker")
   assert sentinel.read_bytes()==b"marker"
@@ -32,6 +33,11 @@ with tempfile.TemporaryDirectory(prefix="seqimages-native-test-") as temp:
    try:
     unexpected,_=listener.accept();unexpected.close();raise AssertionError("Sandbox reached logger")
    except socket.timeout:pass
+  cancellation_test=out/"cancellation-broker.exe"
+  cancelled=subprocess.run([sys.executable,str(root/"native/tests/windows-cancellation.py"),str(cancellation_test),str(helper)],capture_output=True,text=True,timeout=20)
+  assert cancelled.returncode==0,(cancelled.stdout,cancelled.stderr)
+  cancellation=cancelled.stdout.strip()
+  cancellation_test.unlink()
   test.unlink()
  if not windows:
   sentinel=scratch/"sentinel";sentinel.write_bytes(b"marker")
@@ -41,5 +47,5 @@ with tempfile.TemporaryDirectory(prefix="seqimages-native-test-") as temp:
   denials=probe.stdout.strip()
  bad=subprocess.run(command,input=struct.pack(">I",10)+b"bad",capture_output=True,timeout=25)
  assert bad.returncode!=0 and not bad.stdout
- report={"platform":name,"decode_seconds":elapsed,"pixel_sha256":digest,"pixel_bytes":len(result.stdout),"frames":44,"malformed_input_rejected":True,"os_denials":denials,"executables":{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
+ report={"platform":name,"decode_seconds":elapsed,"pixel_sha256":digest,"pixel_bytes":len(result.stdout),"frames":44,"malformed_input_rejected":True,"os_denials":denials,"broker_cancellation":cancellation,"executables":{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
  (out/"validation.json").write_text(json.dumps(report,indent=2)+"\n");print(json.dumps(report,indent=2))

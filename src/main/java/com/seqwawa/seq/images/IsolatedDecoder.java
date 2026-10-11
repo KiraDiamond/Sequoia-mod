@@ -32,6 +32,12 @@ final class IsolatedDecoder {
     }
 
     static ImageDecoder.Animation decode(byte[] bytes) throws IOException {
+        return decode(bytes, new MediaCancellation());
+    }
+
+    static ImageDecoder.Animation decode(byte[] bytes, MediaCancellation cancellation)
+            throws IOException {
+        cancellation.check();
         MediaFormat.identify(bytes);
         String platform = platform(System.getProperty("os.name"), System.getProperty("os.arch"));
         boolean windows = platform.startsWith("windows-");
@@ -62,8 +68,10 @@ final class IsolatedDecoder {
             environment.clear();
             if (systemRoot != null) environment.put("SystemRoot", systemRoot);
             if (local != null) environment.put("LOCALAPPDATA", local);
+            cancellation.check();
             process = builder.start();
             Process running = process;
+            cancellation.attach(running::destroyForcibly);
             timeout = WATCHDOG.schedule(() -> running.destroyForcibly(), 22, TimeUnit.SECONDS);
             try (var out =
                     new DataOutputStream(new BufferedOutputStream(process.getOutputStream()))) {
@@ -74,11 +82,13 @@ final class IsolatedDecoder {
             try (var input = process.getInputStream()) {
                 animation = DecodedFrames.read(input);
             }
+            cancellation.check();
             await(process, 2);
             return animation;
         } catch (IOException failure) {
             throw new IOException("Image could not be decoded within safety limits");
         } finally {
+            cancellation.detach();
             if (timeout != null) timeout.cancel(false);
             if (process != null && process.isAlive()) {
                 // On Windows, killing the broker also kills the decoder through its Job Object.

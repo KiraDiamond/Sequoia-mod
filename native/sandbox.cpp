@@ -120,21 +120,6 @@ int wmain(int argc,wchar_t** argv) {
   for(int i=0;i<count;i++)grants.read(fs::absolute(argv[4+i]));
   // Input and output use inherited pipes, so the child needs no scratch-directory grant.
   SECURITY_CAPABILITIES security{};security.AppContainerSid=grants.sid; // No network or other capabilities.
-  SIZE_T size=0;InitializeProcThreadAttributeList(nullptr,2,0,&size);
-  std::vector<BYTE> storage(size);
-  auto attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)storage.data();
-  check(InitializeProcThreadAttributeList(attributes,2,0,&size),"Process attributes");
-  struct AttributeCleanup {LPPROC_THREAD_ATTRIBUTE_LIST p;~AttributeCleanup(){DeleteProcThreadAttributeList(p);}} ac{attributes};
-  check(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-   &security,sizeof(security),nullptr,nullptr),"AppContainer attributes");
-  STARTUPINFOEXW startup{};startup.StartupInfo.cb=sizeof(startup);startup.lpAttributeList=attributes;
-  Handle input,output,error;
-  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_INPUT_HANDLE),GetCurrentProcess(),&input.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Input pipe");
-  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_OUTPUT_HANDLE),GetCurrentProcess(),&output.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Output pipe");
-  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_ERROR_HANDLE),GetCurrentProcess(),&error.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Error pipe");
-  HANDLE inherited[]={input.h,output.h,error.h};
-  check(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),nullptr,nullptr),"Pipe handles");
-  startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;startup.StartupInfo.hStdInput=input;startup.StartupInfo.hStdOutput=output;startup.StartupInfo.hStdError=error;
   Handle job;job.h=CreateJobObjectW(nullptr,nullptr);check(job.h!=nullptr,"Sandbox job");
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_ACTIVE_PROCESS|JOB_OBJECT_LIMIT_PROCESS_MEMORY;
@@ -142,6 +127,23 @@ int wmain(int argc,wchar_t** argv) {
   check(SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)),"Sandbox job limits");
   JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};ui.UIRestrictionsClass=0xff;
   check(SetInformationJobObject(job,JobObjectBasicUIRestrictions,&ui,sizeof(ui)),"Sandbox UI restrictions");
+  Handle input,output,error;
+  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_INPUT_HANDLE),GetCurrentProcess(),&input.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Input pipe");
+  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_OUTPUT_HANDLE),GetCurrentProcess(),&output.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Output pipe");
+  check(DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_ERROR_HANDLE),GetCurrentProcess(),&error.h,0,TRUE,DUPLICATE_SAME_ACCESS),"Error pipe");
+  HANDLE inherited[]={input.h,output.h,error.h},jobs[]={job.h};
+  SIZE_T size=0;InitializeProcThreadAttributeList(nullptr,3,0,&size);
+  std::vector<BYTE> storage(size);
+  auto attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)storage.data();
+  check(InitializeProcThreadAttributeList(attributes,3,0,&size),"Process attributes");
+  struct AttributeCleanup {LPPROC_THREAD_ATTRIBUTE_LIST p;~AttributeCleanup(){DeleteProcThreadAttributeList(p);}} ac{attributes};
+  check(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+   &security,sizeof(security),nullptr,nullptr),"AppContainer attributes");
+  check(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),nullptr,nullptr),"Pipe handles");
+  // Assign at creation so cancelling the broker cannot orphan a suspended child.
+  check(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_JOB_LIST,jobs,sizeof(jobs),nullptr,nullptr),"Sandbox job attribute");
+  STARTUPINFOEXW startup{};startup.StartupInfo.cb=sizeof(startup);startup.lpAttributeList=attributes;
+  startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;startup.StartupInfo.hStdInput=input;startup.StartupInfo.hStdOutput=output;startup.StartupInfo.hStdError=error;
   std::wstring command;
   for(int i=4+count;i<argc;i++){if(!command.empty())command+=L" ";command+=quote(argv[i]);}
   // Build a fresh environment to keep launcher secrets and injection options out of the child.
@@ -155,7 +157,8 @@ int wmain(int argc,wchar_t** argv) {
    EXTENDED_STARTUPINFO_PRESENT|CREATE_UNICODE_ENVIRONMENT|CREATE_SUSPENDED|CREATE_NO_WINDOW,
    environment.data(),scratch.c_str(),&startup.StartupInfo,&pi),"Create AppContainer process");
   Handle process,thread;process.h=pi.hProcess;thread.h=pi.hThread;
-  if(!AssignProcessToJobObject(job,process)){TerminateProcess(process,1);check(false,"Assign sandbox job");}
+  BOOL assigned=FALSE;
+  if(!IsProcessInJob(process,job,&assigned) || !assigned){TerminateProcess(process,1);check(false,"Verify sandbox job");}
   Handle token;check(OpenProcessToken(process,TOKEN_QUERY,&token.h),"Sandbox token");
   DWORD appContainer=0,returned=0;
   check(GetTokenInformation(token,TokenIsAppContainer,&appContainer,sizeof(appContainer),&returned) && appContainer,"Verify AppContainer token");

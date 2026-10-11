@@ -18,6 +18,12 @@ final class CacheCodec {
     private CacheCodec() {}
 
     static Encoded encode(ImageDecoder.Animation animation) throws IOException {
+        return encode(animation, new MediaCancellation());
+    }
+
+    static Encoded encode(ImageDecoder.Animation animation, MediaCancellation cancellation)
+            throws IOException {
+        cancellation.check();
         int w = animation.width(), h = animation.height(), count = animation.frames().size();
         DecodedFrames.validate(w, h, count);
         var durations = new ArrayList<Integer>(count);
@@ -27,6 +33,7 @@ final class CacheCodec {
         byte[] row = new byte[pixelsPerFrame * 4];
         try (var output = new DeflaterOutputStream(bytes, deflater, 65536)) {
             for (var frame : animation.frames()) {
+                cancellation.check();
                 if (frame.argb().length != w * h
                         || frame.durationMs() < 1
                         || frame.durationMs() > 655350)
@@ -49,6 +56,12 @@ final class CacheCodec {
     }
 
     static ImageDecoder.Animation decode(Encoded encoded) throws IOException {
+        return decode(encoded, new MediaCancellation());
+    }
+
+    static ImageDecoder.Animation decode(Encoded encoded, MediaCancellation cancellation)
+            throws IOException {
+        cancellation.check();
         int w = encoded.width(), h = encoded.height(), count = encoded.durations().size();
         DecodedFrames.validate(w, h, count);
         if (encoded.format() != Format.DEFLATE || encoded.data().length > 64 * 1024 * 1024)
@@ -60,6 +73,7 @@ final class CacheCodec {
         byte[] bytes = new byte[n * 4];
         try (var input = new InflaterInputStream(source, inflater, 65536)) {
             for (int duration : encoded.durations()) {
+                cancellation.check();
                 if (duration < 1 || duration > 655350)
                     throw new IOException("Invalid cached timing");
                 if (input.readNBytes(bytes, 0, bytes.length) != bytes.length)

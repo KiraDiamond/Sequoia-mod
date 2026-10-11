@@ -50,6 +50,11 @@ final class MediaDownload {
     }
 
     static byte[] fetch(URI uri) throws IOException {
+        return fetch(uri, new MediaCancellation());
+    }
+
+    static byte[] fetch(URI uri, MediaCancellation cancellation) throws IOException {
+        cancellation.check();
         if (!MediaLinks.allowed(uri)) throw new IOException("Unsupported image destination");
         URI resolved = BridgeMedia.resolve(uri);
         if (MediaLinks.isKlipyPage(resolved)) throw new PendingMedia();
@@ -92,7 +97,8 @@ final class MediaDownload {
                         .build()) {
             return fetch(
                     resolved,
-                    (destination, limit, deadline) -> request(client, destination, limit, deadline),
+                    (destination, limit, deadline) ->
+                            request(client, destination, limit, deadline, cancellation),
                     System.nanoTime() + 20_000_000_000L);
         }
     }
@@ -156,8 +162,14 @@ final class MediaDownload {
         throw new IOException("Too many image redirects");
     }
 
-    private static Reply request(CloseableHttpClient client, URI uri, int limit, long deadline)
+    private static Reply request(
+            CloseableHttpClient client,
+            URI uri,
+            int limit,
+            long deadline,
+            MediaCancellation cancellation)
             throws IOException {
+        cancellation.check();
         checkDeadline(deadline);
         var request = new HttpGet(uri);
         request.setHeader("Accept", "image/gif,image/png,image/jpeg,video/mp4,text/html;q=0.5");
@@ -168,25 +180,30 @@ final class MediaDownload {
                         request::cancel,
                         Math.max(1, deadline - System.nanoTime()),
                         TimeUnit.NANOSECONDS);
-        try (var response = client.executeOpen(null, request, null)) {
-            try {
-                int status = response.getCode();
-                var location = response.getFirstHeader("Location");
-                if (status != 200)
+        try {
+            cancellation.attach(request::cancel);
+            try (var response = client.executeOpen(null, request, null)) {
+                try {
+                    int status = response.getCode();
+                    var location = response.getFirstHeader("Location");
+                    if (status != 200)
+                        return new Reply(
+                                status, location == null ? null : location.getValue(), new byte[0]);
+                    var entity = response.getEntity();
+                    if (entity == null) throw new IOException("Empty image response");
+                    String encoding = entity.getContentEncoding();
+                    if (encoding != null && !encoding.equalsIgnoreCase("identity"))
+                        throw new IOException("Unsupported HTTP content encoding");
+                    if (entity.getContentLength() > limit)
+                        throw new IOException("Media exceeds download limit");
                     return new Reply(
-                            status, location == null ? null : location.getValue(), new byte[0]);
-                var entity = response.getEntity();
-                if (entity == null) throw new IOException("Empty image response");
-                String encoding = entity.getContentEncoding();
-                if (encoding != null && !encoding.equalsIgnoreCase("identity"))
-                    throw new IOException("Unsupported HTTP content encoding");
-                if (entity.getContentLength() > limit)
-                    throw new IOException("Media exceeds download limit");
-                return new Reply(status, null, readLimited(entity.getContent(), limit, deadline));
-            } finally {
-                request.cancel();
-            } // Abort here: closing the response first may drain an oversized body.
+                            status, null, readLimited(entity.getContent(), limit, deadline));
+                } finally {
+                    request.cancel();
+                } // Abort here: closing the response first may drain an oversized body.
+            }
         } finally {
+            cancellation.detach();
             watchdog.cancel(false);
             request.cancel();
         }

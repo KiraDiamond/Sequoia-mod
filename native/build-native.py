@@ -25,12 +25,19 @@ if host=="windows":
  vswhere=pathlib.Path(os.environ["ProgramFiles(x86)"])/"Microsoft Visual Studio/Installer/vswhere.exe"
  install=subprocess.check_output([str(vswhere),"-latest","-products","*","-property","installationPath"],text=True).strip()
  dev=pathlib.Path(install)/"Common7/Tools/VsDevCmd.bat"
+ paused=out/"cancellation-broker.cpp"
+ source=(root/"native/sandbox.cpp").read_text()
+ anchor="  Handle process,thread;process.h=pi.hProcess;thread.h=pi.hThread;"
+ assert source.count(anchor)==1
+ paused.write_text(source.replace(anchor,anchor+'\n  std::cout<<"SUSPENDED_CHILD "<<pi.dwProcessId<<"\\n"<<std::flush;Sleep(INFINITE);'))
  cmd=out/"build-broker.cmd"
  arch_arg="arm64" if arch=="aarch64" else "x64"
  cmd.write_text('@echo off\ncall "'+str(dev)+'" -arch='+arch_arg+' -host_arch='+arch_arg+'\nif errorlevel 1 exit /b 1\ncl /nologo /std:c++17 /O2 /MT /EHsc "'+str(root/"native/sandbox.cpp")+'" /Fe:"'+str(out/"sandbox.exe")+'" /Fo:"'+str(out/"sandbox.obj")+'" /link /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA\n')
  with cmd.open("a") as stream:
   stream.write('if errorlevel 1 exit /b 1\ncl /nologo /std:c++17 /O2 /MT /EHsc "'+str(root/"native/windows-probe.cpp")+'" /Fe:"'+str(out/"sandbox-probe.exe")+'" /Fo:"'+str(out/"probe.obj")+'" /link /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA\n')
+ with cmd.open("a") as stream:
+  stream.write('if errorlevel 1 exit /b 1\ncl /nologo /std:c++17 /O2 /MT /EHsc "'+str(paused)+'" /Fe:"'+str(out/"cancellation-broker.exe")+'" /Fo:"'+str(out/"cancel.obj")+'" /link /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA\n')
  run("cmd","/c",str(cmd))
- cmd.unlink();(out/"sandbox.obj").unlink();(out/"probe.obj").unlink()
+ cmd.unlink();(out/"sandbox.obj").unlink();(out/"probe.obj").unlink();(out/"cancel.obj").unlink();paused.unlink()
 if host=="macos":run("codesign","--force","--sign","-",str(out/exe))
 run("python",str(root/"native/verify-native.py"),args.platform,str(out),str(target_dir))

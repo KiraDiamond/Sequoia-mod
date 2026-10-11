@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -244,7 +245,7 @@ public final class ImagePreviews {
                     && !found.loading
                     && found.error == null) {
                 var stored = found.stored;
-                load(key, found, () -> CacheCodec.decode(stored));
+                load(key, found, cancellation -> CacheCodec.decode(stored, cancellation));
             }
             return found;
         }
@@ -253,50 +254,65 @@ public final class ImagePreviews {
         preview.source = resolved;
         CACHE.put(key, preview);
         trim();
-        load(key, preview, () -> IsolatedDecoder.decode(MediaDownload.fetch(uri)));
+        load(
+                key,
+                preview,
+                cancellation -> {
+                    byte[] bytes = MediaDownload.fetch(uri, cancellation);
+                    cancellation.check();
+                    return IsolatedDecoder.decode(bytes, cancellation);
+                });
         return preview;
     }
 
     @FunctionalInterface
     private interface DecodeTask {
-        ImageDecoder.Animation run() throws Exception;
+        ImageDecoder.Animation run(MediaCancellation cancellation) throws Exception;
     }
 
     private static void load(String key, Preview preview, DecodeTask task) {
         preview.loading = true;
         preview.error = null;
         preview.waitingUntil = 0;
+        preview.work =
+                new FutureTask<>(
+                        () -> {
+                            ImageDecoder.Animation animation = null;
+                            Exception error = null;
+                            try {
+                                preview.cancellation.check();
+                                animation = task.run(preview.cancellation);
+                                preview.cancellation.check();
+                            } catch (Exception failure) {
+                                error = failure;
+                            }
+                            if (preview.cancellation.isCancelled()) return null;
+                            var decoded = animation;
+                            var failure = error;
+                            Minecraft.getInstance()
+                                    .execute(
+                                            () -> {
+                                                if (CACHE.get(key) != preview
+                                                        || preview.cancellation.isCancelled())
+                                                    return;
+                                                preview.loading = false;
+                                                if (failure == null) {
+                                                    preview.animation = decoded;
+                                                    preview.start = System.nanoTime();
+                                                    compress(key, preview);
+                                                    trim();
+                                                } else {
+                                                    preview.failed(failure, System.nanoTime());
+                                                    LOG.debug(
+                                                            "Image preview failed: {}",
+                                                            preview.statusMessage(
+                                                                    System.nanoTime()));
+                                                }
+                                            });
+                            return null;
+                        });
         try {
-            CompletableFuture.supplyAsync(
-                            () -> {
-                                try {
-                                    return task.run();
-                                } catch (Exception e) {
-                                    throw new java.util.concurrent.CompletionException(e);
-                                }
-                            },
-                            DOWNLOADS)
-                    .whenComplete(
-                            (animation, error) ->
-                                    Minecraft.getInstance()
-                                            .execute(
-                                                    () -> {
-                                                        if (CACHE.get(key) != preview) return;
-                                                        preview.loading = false;
-                                                        if (error == null) {
-                                                            preview.animation = animation;
-                                                            preview.start = System.nanoTime();
-                                                            compress(key, preview);
-                                                            trim();
-                                                        } else {
-                                                            preview.failed(
-                                                                    error, System.nanoTime());
-                                                            LOG.debug(
-                                                                    "Image preview failed: {}",
-                                                                    preview.statusMessage(
-                                                                            System.nanoTime()));
-                                                        }
-                                                    }));
+            DOWNLOADS.execute(preview.work);
         } catch (java.util.concurrent.RejectedExecutionException e) {
             preview.loading = false;
             preview.error = "Too many images loading; clear previews and try again";
@@ -314,32 +330,36 @@ public final class ImagePreviews {
             CompletableFuture.supplyAsync(
                             () -> {
                                 try {
-                                    return CacheCodec.encode(animation);
+                                    return CacheCodec.encode(animation, preview.cancellation);
                                 } catch (Exception e) {
                                     throw new java.util.concurrent.CompletionException(e);
                                 }
                             },
                             COMPRESSION)
                     .whenComplete(
-                            (stored, error) ->
-                                    Minecraft.getInstance()
-                                            .execute(
-                                                    () -> {
-                                                        if (CACHE.get(key) != preview) return;
-                                                        preview.compressing = false;
-                                                        if (error == null) {
-                                                            preview.stored = stored;
-                                                            if (System.nanoTime() - preview.lastUsed
-                                                                    > 1_000_000_000L)
-                                                                preview.releaseDecoded();
-                                                            trim();
-                                                        } else {
-                                                            preview.compressionFailed = true;
-                                                            LOG.warn(
-                                                                    "Preview cache compression failed; keeping decoded preview",
-                                                                    error);
-                                                        }
-                                                    }));
+                            (stored, error) -> {
+                                if (preview.cancellation.isCancelled()) return;
+                                Minecraft.getInstance()
+                                        .execute(
+                                                () -> {
+                                                    if (CACHE.get(key) != preview
+                                                            || preview.cancellation.isCancelled())
+                                                        return;
+                                                    preview.compressing = false;
+                                                    if (error == null) {
+                                                        preview.stored = stored;
+                                                        if (System.nanoTime() - preview.lastUsed
+                                                                > 1_000_000_000L)
+                                                            preview.releaseDecoded();
+                                                        trim();
+                                                    } else {
+                                                        preview.compressionFailed = true;
+                                                        LOG.warn(
+                                                                "Preview cache compression failed; keeping decoded preview",
+                                                                error);
+                                                    }
+                                                });
+                            });
         } catch (java.util.concurrent.RejectedExecutionException busy) {
             preview.compressing = false;
         }
@@ -377,6 +397,8 @@ public final class ImagePreviews {
     }
 
     static final class Preview {
+        final MediaCancellation cancellation = new MediaCancellation();
+        FutureTask<Void> work;
         URI source;
         ImageDecoder.Animation animation;
         CacheCodec.Encoded stored;
@@ -453,6 +475,11 @@ public final class ImagePreviews {
         }
 
         void close() {
+            cancellation.cancel();
+            if (work != null) {
+                work.cancel(true);
+                DOWNLOADS.remove(work);
+            }
             releaseDecoded();
             stored = null;
         }
