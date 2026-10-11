@@ -77,6 +77,8 @@ class SecurityTest {
 
     @Test
     void stalledResolverIsBoundedByTheDownloadDeadline() throws Exception {
+        var answer = new InetAddress[] {InetAddress.getByName("1.1.1.1")};
+        assertArrayEquals(answer, new PublicDns(deadline(), host -> answer).resolve("i.imgur.com"));
         var release = new java.util.concurrent.CountDownLatch(1);
         // Like the OS resolver, a stalled lookup ignores interruption.
         PublicDns.Lookup stalled =
@@ -105,22 +107,21 @@ class SecurityTest {
             assertTrue(elapsedMs < 2_000, "lookup outlived its deadline: " + elapsedMs + " ms");
             // While stalled lookups hold the resolver threads, new lookups fail instead of queueing
             // without bound.
-            UnknownHostException last = null;
+            // Further lookups wait only until their own deadline and give their queue slot back.
+            long burst = System.nanoTime();
             for (int i = 0; i < 8; i++) {
-                long shortDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50);
-                last =
-                        assertThrows(
-                                UnknownHostException.class,
-                                () -> new PublicDns(shortDeadline, stalled).resolve("i.imgur.com"));
+                long shortDeadline =
+                        System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50);
+                assertThrows(
+                        UnknownHostException.class,
+                        () -> new PublicDns(shortDeadline, stalled).resolve("i.imgur.com"));
             }
-            assertEquals("Media host lookup unavailable", last.getMessage());
+            assertTrue(
+                    (System.nanoTime() - burst) / 1_000_000 < 3_000, "lookups queued past deadlines");
+            assertEquals(0, PublicDns.queuedLookups(), "abandoned lookups still hold queue slots");
         } finally {
             release.countDown();
         }
-        assertArrayEquals(
-                new InetAddress[] {InetAddress.getByName("1.1.1.1")},
-                new PublicDns(deadline(), host -> new InetAddress[] {InetAddress.getByName("1.1.1.1")})
-                        .resolve("i.imgur.com"));
     }
 
     @Test

@@ -63,10 +63,10 @@ final class PublicDns implements DnsResolver {
             long remaining = Math.max(0, deadline - System.nanoTime());
             return checked(pending.get(remaining, TimeUnit.NANOSECONDS));
         } catch (TimeoutException late) {
-            pending.cancel(true);
+            abandon(pending);
             throw new UnknownHostException("Media host lookup timed out");
         } catch (InterruptedException interrupted) {
-            pending.cancel(true);
+            abandon(pending);
             Thread.currentThread().interrupt();
             throw new UnknownHostException("Media host lookup cancelled");
         } catch (ExecutionException failed) {
@@ -75,6 +75,16 @@ final class PublicDns implements DnsResolver {
             wrapped.initCause(failed.getCause());
             throw wrapped;
         }
+    }
+
+    /** Frees a queued lookup's slot at once; a running one keeps its thread until the OS returns. */
+    private static void abandon(Future<InetAddress[]> pending) {
+        pending.cancel(true);
+        LOOKUPS.remove((Runnable) pending);
+    }
+
+    static int queuedLookups() {
+        return LOOKUPS.getQueue().size();
     }
 
     @Override
