@@ -79,16 +79,55 @@ def profiles():
     return names | folders
 
 
+advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+advapi.GetNamedSecurityInfoW.argtypes = [
+    wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+advapi.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+advapi.GetAce.restype = wintypes.BOOL
+advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+kernel.LocalFree.argtypes = [ctypes.c_void_p]
+
+
+class AclHeader(ctypes.Structure):
+    _fields_ = [("revision", ctypes.c_ubyte), ("sbz1", ctypes.c_ubyte), ("size", wintypes.WORD),
+                ("ace_count", wintypes.WORD), ("sbz2", wintypes.WORD)]
+
+
+class AceHeader(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("size", wintypes.WORD),
+                ("mask", wintypes.DWORD)]
+
+
 def app_container_aces(path):
-    """Explicit ACL entries for AppContainer SIDs (S-1-15-2-...) on one file."""
-    script = ("(Get-Acl -LiteralPath $env:SEQIMAGES_ACL_PATH).GetAccessRules($true,$false,"
-              "[System.Security.Principal.SecurityIdentifier]) | "
-              "ForEach-Object { $_.IdentityReference.Value }")
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                            env={**os.environ, "SEQIMAGES_ACL_PATH": str(path)},
-                            capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, ("Get-Acl failed", result.stderr)
-    return sorted(s for s in result.stdout.split() if s.startswith("S-1-15-2-"))
+    """Explicit allow/deny ACL entries for AppContainer SIDs (S-1-15-2-...) on one file."""
+    dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+    error = advapi.GetNamedSecurityInfoW(str(path), 1, 4, None, None, ctypes.byref(dacl), None,
+                                         ctypes.byref(descriptor))
+    assert error == 0, ("GetNamedSecurityInfo failed", error)
+    try:
+        sids = []
+        for index in range(AclHeader.from_address(dacl.value).ace_count):
+            ace = ctypes.c_void_p()
+            assert advapi.GetAce(dacl, index, ctypes.byref(ace)), ctypes.get_last_error()
+            header = AceHeader.from_address(ace.value)
+            # Access-allowed (0) and access-denied (1) entries that were not inherited (0x10).
+            if header.type not in (0, 1) or header.flags & 0x10:
+                continue
+            text = wintypes.LPWSTR()
+            assert advapi.ConvertSidToStringSidW(ace.value + ctypes.sizeof(AceHeader),
+                                                 ctypes.byref(text)), ctypes.get_last_error()
+            try:
+                if text.value.startswith("S-1-15-2-"):
+                    sids.append(text.value)
+            finally:
+                kernel.LocalFree(text)
+        return sorted(sids)
+    finally:
+        kernel.LocalFree(descriptor)
 
 
 def state():

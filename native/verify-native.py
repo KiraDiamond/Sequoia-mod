@@ -26,34 +26,57 @@ def command(scratch):
     return [str(helper)]
 
 
+def confinement(pid):
+    """Reports the OS sandbox state of a helper waiting for input; None where not observable."""
+    if sys.platform.startswith("linux"):
+        status = dict(line.split(":", 1) for line in
+                      pathlib.Path(f"/proc/{pid}/status").read_text().splitlines() if ":" in line)
+        seccomp, no_new_privs = status["Seccomp"].strip(), status["NoNewPrivs"].strip()
+        assert seccomp == "2" and no_new_privs == "1", ("helper not confined", seccomp, no_new_privs)
+        return "seccomp filter and no_new_privs active before input"
+    if sys.platform == "darwin":
+        import ctypes
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        libsystem.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        libsystem.sandbox_check.restype = ctypes.c_int
+        assert libsystem.sandbox_check(pid, None, 0) == 1, "helper not under Seatbelt"
+        return "Seatbelt active before input"
+    return None
+
+
 def decode(scratch, data, delay=0.0):
     """Runs one decode; with a delay the helper first sets up and sandboxes itself."""
     process = subprocess.Popen(command(scratch), stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    confined = None
     if delay:
         time.sleep(delay)
         assert process.poll() is None, ("helper exited while waiting for input",
                                         process.stderr.read().decode(errors="replace"))
+        if not windows:
+            confined = confinement(process.pid)
     out, err = process.communicate(struct.pack(">I", len(data)) + data, timeout=40)
-    return process.returncode, out, err.decode(errors="replace")
+    return process.returncode, out, err.decode(errors="replace"), confined
 
 
 report = {"platform": name, "helper_dir": str(helper_dir)}
 with tempfile.TemporaryDirectory(prefix="seqimages-native-test-") as temp:
     scratch = pathlib.Path(temp).resolve()
     start = time.perf_counter()
-    code, pixels, err = decode(scratch, media)
+    code, pixels, err, _ = decode(scratch, media)
     report["decode_seconds"] = time.perf_counter() - start
     assert code == 0, err
     digest = hashlib.sha256(pixels).hexdigest()
     assert digest == EXPECTED, (name, digest, len(pixels))
     report.update(pixel_sha256=digest, pixel_bytes=len(pixels), frames=44)
 
-    code, delayed, err = decode(scratch, media, delay=0.5)
+    code, delayed, err, confined = decode(scratch, media, delay=0.5)
     assert code == 0 and delayed == pixels, ("prepared helper decoded differently", code, err)
     report["prepared_before_input"] = True
+    if confined:
+        report["helper_confinement"] = confined
 
-    code, out, err = decode(scratch, b"bad")
+    code, out, err, _ = decode(scratch, b"bad")
     assert code != 0 and not out, (code, len(out))
     report["malformed_input_rejected"] = True
 

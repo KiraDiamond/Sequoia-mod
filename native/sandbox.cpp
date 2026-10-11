@@ -11,6 +11,7 @@
 #include <aclapi.h>
 #include <sddl.h>
 #include <objbase.h>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -24,7 +25,7 @@
 namespace fs=std::filesystem;
 static constexpr int CANCELLED=3;
 static constexpr DWORD MUTEX_WAIT_MS=10000,CHILD_EXIT_MS=3000;
-static constexpr size_t MAX_SWEPT_LEASES=16;
+static constexpr size_t MAX_SWEPT_LEASES=16,MAX_LEASE_FILES=256;
 static constexpr DWORD MAX_LEASE_BYTES=64*1024;
 static void check(bool ok,const char* what) {
  if(!ok) throw std::runtime_error(std::string(what)+" ("+std::to_string(GetLastError())+")");
@@ -109,10 +110,13 @@ static DWORD setAccess(const fs::path& p,PSID sid,DWORD rights,ACCESS_MODE mode)
  if(descriptor)LocalFree(descriptor);
  return error;
 }
+static std::uint64_t ticks(FILETIME time) {
+ return (std::uint64_t(time.dwHighDateTime)<<32)|time.dwLowDateTime;
+}
 static std::uint64_t creationTime(HANDLE process) {
  FILETIME created,exited,kernel,user;
  if(!GetProcessTimes(process,&created,&exited,&kernel,&user))return 0;
- return (std::uint64_t(created.dwHighDateTime)<<32)|created.dwLowDateTime;
+ return ticks(created);
 }
 static bool profileGone(HRESULT result) {
  return SUCCEEDED(result) || result==HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
@@ -162,48 +166,61 @@ static std::vector<std::wstring> readLease(const fs::path& file) {
  while((end=text.find(L'\n',start))!=std::wstring::npos){lines.push_back(text.substr(start,end-start));start=end+1;}
  return lines;
 }
+// A broker runs as this user, so it can always be opened for query. Any process that cannot
+// be is not the lease's owner, even if it reuses the owner's PID.
 static bool ownerAlive(const std::wstring& pid,const std::wstring& created) {
  DWORD id;std::uint64_t time;
  try{id=std::stoul(pid);time=std::stoull(created);}catch(...){return false;}
- Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,id));
- if(!process.valid())return GetLastError()==ERROR_ACCESS_DENIED;
- return WaitForSingleObject(process,0)==WAIT_TIMEOUT && creationTime(process)==time;
+ Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,id));
+ DWORD code=0;
+ return process.valid() && GetExitCodeProcess(process,&code) && code==STILL_ACTIVE
+  && creationTime(process)==time;
 }
 static bool olderThanMinutes(const fs::path& file,unsigned minutes) {
  WIN32_FILE_ATTRIBUTE_DATA data;
  if(!GetFileAttributesExW(file.c_str(),GetFileExInfoStandard,&data))return false;
  FILETIME now;GetSystemTimeAsFileTime(&now);
- auto ticks=[](FILETIME t){return (std::uint64_t(t.dwHighDateTime)<<32)|t.dwLowDateTime;};
  return ticks(now)-ticks(data.ftLastWriteTime)>std::uint64_t(minutes)*60*10000000;
 }
-// Removes profiles and grants left by brokers that were killed before cleaning up.
+// Removes profiles and grants left by brokers that were killed before cleaning up. Leases
+// are tried oldest first and a failed attempt moves to the back, so a lease that cannot be
+// cleaned yet does not block the others.
 static void sweepStaleLeases(const fs::path& directory,HANDLE mutex) {
  MutexLock lock(mutex);
- size_t swept=0;
+ struct Stale {fs::file_time_type written;fs::path file;std::vector<std::wstring> lines;};
+ std::vector<Stale> stale;size_t scanned=0;
  for(auto& entry:fs::directory_iterator(directory)) {
-  if(swept==MAX_SWEPT_LEASES)break;
+  if(++scanned>MAX_LEASE_FILES)break;
   if(entry.path().extension()!=L".lease")continue;
   auto lines=readLease(entry.path());
   if(lines.size()<3) {
    // A broker killed while writing its header never created a profile.
-   bool stale=lines.size()==2?!ownerAlive(lines[0],lines[1]):olderThanMinutes(entry.path(),10);
-   if(stale)DeleteFileW(entry.path().c_str());
+   bool orphan=lines.size()==2?!ownerAlive(lines[0],lines[1]):olderThanMinutes(entry.path(),10);
+   if(orphan)DeleteFileW(entry.path().c_str());
    continue;
   }
-  if(ownerAlive(lines[0],lines[1]))continue;
-  ++swept;
-  const std::wstring& profile=lines[2];
-  if(profile.rfind(L"SequoiaImages.",0)!=0 || profile+L".lease"!=entry.path().filename().wstring())continue;
+  // Only leases this broker could have written name a matching Sequoia profile.
+  if(lines[2].rfind(L"SequoiaImages.",0)!=0 || lines[2]+L".lease"!=entry.path().filename().wstring()) {
+   DeleteFileW(entry.path().c_str());
+   continue;
+  }
+  if(!ownerAlive(lines[0],lines[1]))stale.push_back({entry.last_write_time(),entry.path(),std::move(lines)});
+ }
+ std::sort(stale.begin(),stale.end(),[](const Stale& a,const Stale& b){return a.written<b.written;});
+ if(stale.size()>MAX_SWEPT_LEASES)stale.resize(MAX_SWEPT_LEASES);
+ for(auto& lease:stale) {
+  const std::wstring& profile=lease.lines[2];
   bool clean=true;PSID sid=nullptr;
   if(SUCCEEDED(DeriveAppContainerSidFromAppContainerName(profile.c_str(),&sid))) {
-   for(size_t i=3;i<lines.size();++i) {
-    fs::path granted(lines[i]);
+   for(size_t i=3;i<lease.lines.size();++i) {
+    fs::path granted(lease.lines[i]);
     if(GetFileAttributesW(granted.c_str())==INVALID_FILE_ATTRIBUTES)continue;
     if(setAccess(granted,sid,0,REVOKE_ACCESS)!=ERROR_SUCCESS)clean=false;
    }
    FreeSid(sid);
   } else clean=false;
-  if(clean && profileGone(DeleteAppContainerProfile(profile.c_str())))DeleteFileW(entry.path().c_str());
+  if(clean && profileGone(DeleteAppContainerProfile(profile.c_str()))) DeleteFileW(lease.file.c_str());
+  else {std::error_code ignored;fs::last_write_time(lease.file,fs::file_time_type::clock::now(),ignored);}
  }
 }
 // One AppContainer profile and its file grants. Neither copyable nor movable: it is the scope
@@ -361,12 +378,13 @@ int wmain(int argc,wchar_t** argv) {
   }
   if(outcome!=Outcome::Exited) {
    TerminateJobObject(job,1);WaitForSingleObject(process,CHILD_EXIT_MS);
-   check(grants.release(),"Sandbox cleanup");
+   if(!grants.release())std::cerr<<"Sandbox cleanup deferred to the next broker\n";
    if(outcome==Outcome::Cancelled)return CANCELLED;
    throw std::runtime_error("Sandbox time limit");
   }
   DWORD code=1;check(GetExitCodeProcess(process,&code),"Sandbox result");
-  check(grants.release(),"Sandbox cleanup");
+  // The decode already finished; a lease keeps any state that cannot be removed now.
+  if(!grants.release())std::cerr<<"Sandbox cleanup deferred to the next broker\n";
   return static_cast<int>(code);
  } catch(const std::exception& e) {
   std::cerr<<"Sandbox blocked: "<<e.what()<<"\n";return 1;
