@@ -15,6 +15,7 @@
     "FontMixin",
     "FontPreparedTextBuilderMixin",
     "GameRendererMixin",
+    "GuiGraphicsMixin",
     "GuildAllianceSnapshotPacketMixin",
     "InGameHudMixin",
     "NameTagFeatureRendererMixin",

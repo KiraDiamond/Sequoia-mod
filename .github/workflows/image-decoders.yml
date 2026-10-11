@@ -1,0 +1,55 @@
+name: Image decoder builds
+on:
+  workflow_dispatch:
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  native:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: windows-x86_64, runner: windows-2025}
+          - {platform: windows-aarch64, runner: windows-11-arm}
+          - {platform: linux-x86_64, runner: ubuntu-24.04}
+          - {platform: linux-aarch64, runner: ubuntu-24.04-arm}
+          - {platform: macos-x86_64, runner: macos-15-intel}
+          - {platform: macos-aarch64, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Linux static linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$RUNNER_TEMP/rustup-init.sh"
+            sh "$RUNNER_TEMP/rustup-init.sh" -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup update stable --no-self-update
+            rustup default stable
+          fi
+      - name: Select native Windows ARM Rust toolchain
+        if: matrix.platform == 'windows-aarch64'
+        run: |
+          rustup toolchain install stable-aarch64-pc-windows-msvc --profile minimal
+          rustup default stable-aarch64-pc-windows-msvc
+      - name: Build and execute native checks
+        run: python native/build-native.py ${{ matrix.platform }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-${{ matrix.platform }}
+          path: build/native/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14

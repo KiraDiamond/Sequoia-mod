@@ -22,5 +22,8 @@
     "fabricloader": ">=${loader_version}",
     "fabric-api": "*",
     "minecraft": "${minecraft_version}"
+  },
+  "breaks": {
+    "sequoia_images": "*"
   }
 }

@@ -2,10 +2,12 @@ package com.seqwawa.seq.images;
 
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.context.CommandContext;
 import com.seqwawa.seq.managers.DiscordRankChatDecorator;
 
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -76,32 +78,8 @@ public final class ImagePreviews {
                                                                                 StringArgumentType
                                                                                         .greedyString())
                                                                         .executes(
-                                                                                context -> {
-                                                                                    URI uri =
-                                                                                            MediaLinks
-                                                                                                    .imageUri(
-                                                                                                            StringArgumentType
-                                                                                                                    .getString(
-                                                                                                                            context,
-                                                                                                                            "url"));
-                                                                                    if (uri
-                                                                                            == null) {
-                                                                                        context.getSource()
-                                                                                                .sendError(
-                                                                                                        Component
-                                                                                                                .literal(
-                                                                                                                        "Use a Discord, Klipy, Tenor, Giphy or Imgur GIF/PNG/JPEG link."));
-                                                                                        return 0;
-                                                                                    }
-                                                                                    context.getSource()
-                                                                                            .sendFeedback(
-                                                                                                    decorate(
-                                                                                                            Component
-                                                                                                                    .literal(
-                                                                                                                            uri
-                                                                                                                                    .toString())));
-                                                                                    return 1;
-                                                                                })))
+                                                                                ImagePreviews
+                                                                                        ::previewCommand)))
                                         .then(
                                                 ClientCommandManager.literal("clear")
                                                         .executes(
@@ -131,6 +109,19 @@ public final class ImagePreviews {
                     }
                 });
         LOG.info("Sequoia Images ready");
+    }
+
+    private static int previewCommand(CommandContext<FabricClientCommandSource> context) {
+        URI uri = MediaLinks.imageUri(StringArgumentType.getString(context, "url"));
+        if (uri == null) {
+            context.getSource()
+                    .sendError(
+                            Component.literal(
+                                    "Use a Discord, Klipy, Tenor, Giphy or Imgur GIF/PNG/JPEG link."));
+            return 0;
+        }
+        context.getSource().sendFeedback(decorate(Component.literal(uri.toString())));
+        return 1;
     }
 
     public static Component decorate(Component source) {

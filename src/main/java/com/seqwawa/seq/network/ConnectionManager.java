@@ -1,6 +1,7 @@
 package com.seqwawa.seq.network;
 
 import com.google.gson.Gson;
+import com.seqwawa.seq.images.BridgeMedia;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.net.URI;
@@ -1776,6 +1777,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
     // ── Incoming message handler ──
 
     private void handleMessage(String message) {
+        message = BridgeMedia.rewrite(message);
         try {
             JsonObject json = GSON.fromJson(message, JsonObject.class);
             if (json == null || !json.has("type")) {

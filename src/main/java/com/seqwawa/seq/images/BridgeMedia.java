@@ -111,9 +111,8 @@ public final class BridgeMedia {
                 json.addProperty("message", rewritten);
                 return json.toString();
             }
-            if (klipy.isEmpty())
-                return payload; // Discord attachments use their path as the key, so late signatures
-                                // still resolve.
+            // Attachment paths stay stable when Discord sends a fresh signature.
+            if (klipy.isEmpty()) return payload;
             List<Pending> pending = PENDING.remove(user);
             if (pending != null && pending.size() == 1 && klipy.size() == 1) {
                 remember(pending.getFirst().uri(), klipy.getFirst());
