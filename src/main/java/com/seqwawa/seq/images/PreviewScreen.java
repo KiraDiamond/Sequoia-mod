@@ -15,8 +15,10 @@ import org.jetbrains.annotations.NotNull;
 import java.net.URI;
 
 /**
- * Enlarged preview in a themed panel. Drawn with GuiGraphics so the image composites in the same
- * pass as its frame; theme colors keep their configured alpha.
+ * Enlarged preview in a themed panel. UiCanvas commands flush after the GUI pass and would paint
+ * over the GuiGraphics-drawn image, and UiRenderer images decode encoded bytes in-process, which
+ * untrusted media must never reach. The whole screen therefore uses GuiGraphics with theme tokens,
+ * keeping each token's configured alpha.
  */
 final class PreviewScreen extends Screen {
     private static final int PADDING = 8;
