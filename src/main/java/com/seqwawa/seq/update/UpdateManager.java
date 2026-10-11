@@ -120,6 +120,10 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     public void applyPendingUpdate(boolean exitAfterInstall) {
+        if (blockUpstreamUpdates()) {
+            sendNotification(statusLine);
+            return;
+        }
         ReleaseCandidate target = pendingRelease;
         if (target == null) {
             sendNotification("No pending update available.");
@@ -156,7 +160,19 @@ public class UpdateManager implements NotificationAccessor {
         }
     }
 
+    private boolean blockUpstreamUpdates() {
+        // Stock releases cannot preserve features carried by a custom build.
+        if (!resolveInstalledVersion().contains("+")) return false;
+        pendingRelease = null;
+        statusLine = "Upstream updates are disabled for custom builds.";
+        return true;
+    }
+
     private void checkForUpdates(boolean manualTrigger) {
+        if (blockUpstreamUpdates()) {
+            if (manualTrigger) sendNotification(statusLine);
+            return;
+        }
         if (checking) {
             if (manualTrigger) {
                 sendNotification("Update check already running.");
@@ -287,6 +303,7 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     void applyRelease(ReleaseCandidate release, boolean exitAfterInstall) {
+        if (blockUpstreamUpdates()) return;
         try {
             Path gameDir = resolveGameDir();
             Path modsDir = gameDir.resolve("mods");

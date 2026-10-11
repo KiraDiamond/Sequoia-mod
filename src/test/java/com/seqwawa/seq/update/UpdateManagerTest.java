@@ -57,6 +57,49 @@ class UpdateManagerTest {
     }
 
     @Test
+    void customBuildNeverChecksForStockUpdates(@TempDir Path gameDir) {
+        TestableUpdateManager manager = newDirectManager(gameDir);
+        manager.installedVersion = "1.10.8+images.1";
+        manager.enqueueFetchResult(CompletableFuture.completedFuture(release("v1.10.8")));
+        manager.enqueueFetchResult(CompletableFuture.completedFuture(release("v9.0.0")));
+
+        manager.checkForUpdatesOnStartup();
+        manager.checkForUpdatesManually();
+
+        assertEquals(0, manager.fetchCalls.get());
+        assertTrue(manager.prompts.isEmpty());
+        assertEquals("Upstream updates are disabled for custom builds.", manager.getStatusLine());
+    }
+
+    @Test
+    void customBuildRefusesAnAlreadyPendingStockUpdate(@TempDir Path gameDir) {
+        TestableUpdateManager manager = newDirectManager(gameDir);
+        manager.enqueueFetchResult(CompletableFuture.completedFuture(release("v9.0.0")));
+        manager.checkForUpdatesManually();
+        assertEquals(1, manager.prompts.size());
+        manager.installedVersion = "1.10.8+images.1";
+        manager.skipRealApply = true;
+        manager.applyStarted = new CountDownLatch(1);
+
+        manager.applyPendingUpdate(false);
+
+        assertEquals(1, manager.applyStarted.getCount());
+        assertEquals("Upstream updates are disabled for custom builds.", manager.getStatusLine());
+    }
+
+    @Test
+    void customBuildCannotInstallAStockReleaseDirectly(@TempDir Path gameDir) {
+        TestableUpdateManager manager = newDirectManager(gameDir);
+        manager.installedVersion = "1.10.8+images.1";
+
+        manager.applyRelease(release("v9.0.0"), false);
+
+        assertFalse(Files.exists(gameDir.resolve("mods")));
+        assertFalse(Files.exists(gameDir.resolve("updates")));
+        assertEquals("Upstream updates are disabled for custom builds.", manager.getStatusLine());
+    }
+
+    @Test
     void parseChecksumAcceptsSha256FileFormat() {
         String checksum = checksumValue();
 
