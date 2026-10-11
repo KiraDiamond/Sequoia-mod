@@ -22,10 +22,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -40,6 +43,8 @@ final class IsolatedDecoder {
     private static final long BROKER_CLEANUP_MILLIS = 5_000;
     private static final long REAP_MILLIS = 3_000;
     private static final int DIAGNOSTIC_BYTES = 2_048;
+    private static final int SCRATCH_ATTEMPTS = 20;
+    private static final long SCRATCH_RETRY_MILLIS = 50;
     /** File the Windows broker watches for in its scratch directory to cancel cleanly. */
     static final String CANCEL_FILE = "cancel";
 
@@ -112,7 +117,7 @@ final class IsolatedDecoder {
             cancellation.check();
             return new Session(builder.start(), scratch, windows, cancellation);
         } catch (IOException | RuntimeException failure) {
-            deleteScratch(scratch, failure);
+            deleteScratch(scratch);
             throw failure;
         }
     }
@@ -277,14 +282,11 @@ final class IsolatedDecoder {
             if (closed) return;
             closed = true;
             if (abortRegistration != null) abortRegistration.close();
-            IOException failure = null;
             try {
                 terminate();
-            } catch (IOException cleanup) {
-                failure = cleanup;
+            } finally {
+                deleteScratch(scratch);
             }
-            failure = deleteScratch(scratch, failure);
-            if (failure != null) throw failure;
         }
     }
 
@@ -369,21 +371,68 @@ final class IsolatedDecoder {
         }
     }
 
+    /**
+     * Kills a worker and waits for it and every process it started. On Windows the broker's
+     * AppContainer decoder ends through its job object only after the broker itself.
+     */
     private static void killAndReap(Process process) throws IOException {
+        List<ProcessHandle> started = process.descendants().toList();
         process.destroyForcibly();
-        if (!waitUninterruptibly(process, REAP_MILLIS))
-            throw new IOException("Image decoder did not exit after termination");
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(REAP_MILLIS);
+        boolean exited = waitUninterruptibly(process.onExit(), deadline);
+        for (var child : started) {
+            child.destroyForcibly();
+            exited &= waitUninterruptibly(child.onExit(), deadline);
+        }
+        if (!exited) throw new IOException("Image decoder did not exit after termination");
     }
 
-    private static IOException deleteScratch(Path scratch, Throwable earlier) {
+    private static boolean waitUninterruptibly(CompletableFuture<?> exit, long deadline) {
+        boolean interrupted = Thread.interrupted();
         try {
-            Files.deleteIfExists(scratch.resolve(CANCEL_FILE));
-            Files.deleteIfExists(scratch);
-            return earlier instanceof IOException io ? io : null;
-        } catch (IOException cleanup) {
-            if (earlier == null) return cleanup;
-            earlier.addSuppressed(cleanup);
-            return earlier instanceof IOException io ? io : null;
+            while (true) {
+                try {
+                    exit.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                    return true;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                } catch (TimeoutException late) {
+                    return false;
+                } catch (ExecutionException impossible) {
+                    return true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Removes the per-session scratch directory. Windows can hold it for a moment after a process
+     * exits; an empty directory left behind is removed when the client exits instead.
+     */
+    private static void deleteScratch(Path scratch) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                Files.deleteIfExists(scratch.resolve(CANCEL_FILE));
+                Files.deleteIfExists(scratch);
+                return;
+            } catch (IOException busy) {
+                if (attempt == SCRATCH_ATTEMPTS || !pause(SCRATCH_RETRY_MILLIS)) {
+                    scratch.toFile().deleteOnExit();
+                    return;
+                }
+            }
+        }
+    }
+
+    private static boolean pause(long millis) {
+        try {
+            Thread.sleep(millis);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
