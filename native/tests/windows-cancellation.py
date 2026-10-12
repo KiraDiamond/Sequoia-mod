@@ -1,4 +1,4 @@
-"""Check broker cancellation against processes, AppContainer profiles, file ACLs and leases.
+"""Check broker cancellation and cleanup against processes, AppContainer profiles, file ACLs and leases.
 
 usage: windows-cancellation.py BROKER PAUSED_BROKER HELPER
 
@@ -24,6 +24,9 @@ kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 kernel.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+kernel.CreateMutexW.restype = wintypes.HANDLE
+kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
 SYNCHRONIZE, TERMINATE = 0x00100000, 0x0001
 WAIT_OBJECT_0 = 0
 
@@ -222,6 +225,33 @@ for attempt in range(2):
         kills += 1
         assert outstanding() == (1, 1, 1), ("after kill", kills, outstanding())
 print(f"HARD_KILL_OK: {kills} killed brokers; decoders exited; each next broker swept the previous leftovers")
+
+# A finished decode must not wait long for a busy ACL mutex: the broker makes one short cleanup
+# attempt, returns the decoder's result and leaves its own state to the lease.
+leftover = set(state()["leases"])
+with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
+    process = start(broker, pathlib.Path(temp))
+    # The startup sweep and file grants are done once the decoder exists.
+    decoder = wait_for_child(process)
+    mutex = kernel.CreateMutexW(None, False, "Local\\SequoiaImagesSandboxAclV1")
+    assert mutex, ("ACL mutex", ctypes.get_last_error())
+    try:
+        assert kernel.WaitForSingleObject(mutex, 5000) in (0, 0x80), "could not hold the ACL mutex"
+        started = time.monotonic()
+        out, err = process.communicate(struct.pack(">I", len(PNG)) + PNG, timeout=60)
+        elapsed = time.monotonic() - started
+        message = err.decode(errors="replace")
+        assert process.returncode == 0 and out, (process.returncode, message)
+        assert "deferred" in message, ("cleanup did not defer while the mutex was held", message)
+        assert elapsed < 8, ("finished decode waited for the busy mutex", elapsed)
+        assert wait_dead(decoder), "decoder outlived its broker"
+    finally:
+        kernel.ReleaseMutex(mutex)
+        kernel.CloseHandle(mutex)
+own = set(state()["leases"]) - set(baseline["leases"])
+assert len(own) == 1 and not own & leftover, ("deferred cleanup must leave only its own lease", own, leftover)
+assert outstanding() == (1, 1, 1), ("deferred cleanup left", outstanding())
+print(f"BUSY_CLEANUP_OK: decode returned in {elapsed:.1f} s with the ACL mutex held; its cleanup was left to the lease")
 
 with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
     process = start(broker, pathlib.Path(temp))
