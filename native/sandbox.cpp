@@ -24,7 +24,9 @@
 #pragma comment(lib,"ole32.lib")
 namespace fs=std::filesystem;
 static constexpr int CANCELLED=3;
-static constexpr DWORD MUTEX_WAIT_MS=10000,CHILD_EXIT_MS=3000;
+// Cleanup runs after the decoder ends, and Java reads the result only once the broker exits,
+// so it waits briefly for the mutex and otherwise leaves the state to the lease.
+static constexpr DWORD MUTEX_WAIT_MS=10000,CLEANUP_WAIT_MS=2000,CHILD_EXIT_MS=3000;
 static constexpr size_t MAX_SWEPT_LEASES=16,MAX_LEASE_FILES=256;
 static constexpr DWORD MAX_LEASE_BYTES=64*1024;
 static void check(bool ok,const char* what) {
@@ -67,8 +69,8 @@ public:
 class MutexLock {
  HANDLE mutex;
 public:
- explicit MutexLock(HANDLE m):mutex(m) {
-  DWORD wait=WaitForSingleObject(mutex,MUTEX_WAIT_MS);
+ explicit MutexLock(HANDLE m,DWORD waitMs=MUTEX_WAIT_MS):mutex(m) {
+  DWORD wait=WaitForSingleObject(mutex,waitMs);
   check(wait==WAIT_OBJECT_0 || wait==WAIT_ABANDONED,"ACL mutex wait");
  }
  MutexLock(const MutexLock&)=delete;
@@ -127,9 +129,12 @@ static bool profileGone(HRESULT result) {
 class Lease {
  fs::path file;
  Handle stream;
+ size_t size=0;
  void line(const std::wstring& text) {
   std::wstring record=text+L"\n";DWORD written=0;
   DWORD bytes=DWORD(record.size()*sizeof(wchar_t));
+  // Never write more than a sweep reads back.
+  check(size+bytes<=MAX_LEASE_BYTES,"Lease size");size+=bytes;
   check(WriteFile(stream,record.data(),bytes,&written,nullptr) && written==bytes,"Lease write");
   check(FlushFileBuffers(stream),"Lease flush");
  }
@@ -159,9 +164,11 @@ static std::vector<std::wstring> readLease(const fs::path& file) {
  Handle stream(CreateFileW(file.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
  if(!stream.valid())return {};
  LARGE_INTEGER size{};
- if(!GetFileSizeEx(stream,&size) || size.QuadPart>MAX_LEASE_BYTES || size.QuadPart%sizeof(wchar_t))return {};
- std::wstring text(size_t(size.QuadPart/sizeof(wchar_t)),L'\0');DWORD read=0;
- if(!ReadFile(stream,text.data(),DWORD(size.QuadPart),&read,nullptr) || read!=size.QuadPart)return {};
+ if(!GetFileSizeEx(stream,&size) || size.QuadPart>MAX_LEASE_BYTES)return {};
+ // A torn final record is dropped below; its state was never created.
+ DWORD bytes=DWORD(size.QuadPart-size.QuadPart%sizeof(wchar_t));
+ std::wstring text(bytes/sizeof(wchar_t),L'\0');DWORD read=0;
+ if(!ReadFile(stream,text.data(),bytes,&read,nullptr) || read!=bytes)return {};
  std::vector<std::wstring> lines;size_t start=0,end;
  while((end=text.find(L'\n',start))!=std::wstring::npos){lines.push_back(text.substr(start,end-start));start=end+1;}
  return lines;
@@ -231,7 +238,7 @@ class Grants {
  Lease lease;
  PSID sid=nullptr;
  std::vector<fs::path> files;
- bool released=false;
+ bool attempted=false,released=false;
  static std::wstring freshName() {
   GUID guid;check(SUCCEEDED(CoCreateGuid(&guid)),"Sandbox identity");
   wchar_t text[40];StringFromGUID2(guid,text,40);
@@ -264,11 +271,13 @@ public:
   }
  }
  // Revokes every grant and deletes the profile; the lease goes only when both succeeded.
+ // One attempt: whatever remains is left to the next broker's sweep.
  bool release() noexcept {
-  if(released)return true;
+  if(attempted)return released;
+  attempted=true;
   bool ok=true;
   try {
-   MutexLock lock(mutex);
+   MutexLock lock(mutex,CLEANUP_WAIT_MS);
    for(auto i=files.rbegin();i!=files.rend();++i)
     if(setAccess(*i,sid,0,REVOKE_ACCESS)!=ERROR_SUCCESS)ok=false;
   } catch(...) {ok=false;}

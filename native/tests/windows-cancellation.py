@@ -25,6 +25,7 @@ kernel.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
 SYNCHRONIZE, TERMINATE = 0x00100000, 0x0001
+WAIT_OBJECT_0 = 0
 
 
 class ProcessEntry(ctypes.Structure):
@@ -135,12 +136,20 @@ def state():
             "leases": sorted(p.name for p in leases.glob("*.lease")) if leases.exists() else []}
 
 
-def wait_dead(pid, millis=5000):
+def open_child(parent, pid):
+    """A handle to the broker's decoder, opened while it is known to be that process."""
     handle = kernel.OpenProcess(SYNCHRONIZE | TERMINATE, False, pid)
-    if not handle:
-        return True
+    assert handle, ("cannot open the decoder", pid, ctypes.get_last_error())
+    # Holding the handle pins the PID; check it still names the broker's child.
+    if pid not in children(parent):
+        kernel.CloseHandle(handle)
+        raise AssertionError(("decoder exited before it could be checked", pid))
+    return handle
+
+
+def wait_dead(handle, millis=5000):
     try:
-        if kernel.WaitForSingleObject(handle, millis) == 0:
+        if kernel.WaitForSingleObject(handle, millis) == WAIT_OBJECT_0:
             return True
         kernel.TerminateProcess(handle, 1)
         kernel.WaitForSingleObject(handle, 3000)
@@ -159,7 +168,7 @@ def wait_for_child(process):
     while time.monotonic() < deadline:
         found = children(process.pid)
         if found:
-            return found[0]
+            return open_child(process.pid, found[0])
         assert process.poll() is None, process.communicate(timeout=5)
         time.sleep(0.05)
     raise AssertionError("broker never started its decoder")
@@ -174,6 +183,8 @@ for attempt in range(5):
         process = start(broker, scratch)
         child = wait_for_child(process)
         (scratch / "cancel").write_bytes(b"")
+        # Keep stdin open until the broker exits, so the decoder cannot end on EOF first.
+        process.wait(timeout=10)
         process.communicate(timeout=10)
         assert process.returncode == 3, ("cancel exit code", process.returncode)
         assert wait_dead(child), "cancelled broker left its decoder running"
@@ -194,7 +205,7 @@ for attempt in range(3):
         process = start(paused_broker, pathlib.Path(temp))
         line = process.stdout.readline().decode().strip()
         assert line.startswith("SUSPENDED_CHILD "), (line, process.poll())
-        child = int(line.split()[1])
+        child = open_child(process.pid, int(line.split()[1]))
         process.kill()
         process.communicate(timeout=10)
         assert wait_dead(child), "killing the broker orphaned its suspended decoder"
