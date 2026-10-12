@@ -32,6 +32,11 @@ public record UiRenderMetrics(
         return Math.max(layoutPixelRatio, oversampledPixelRatio);
     }
 
+    /** Minecraft GUI units per Sequoia UI unit, for Minecraft drawing placed by a UI layout. */
+    public float guiUnitsPerUiUnit() {
+        return pixelRatio() / (float) minecraftGuiScale;
+    }
+
     public float width() {
         return framebufferWidth / pixelRatio();
     }

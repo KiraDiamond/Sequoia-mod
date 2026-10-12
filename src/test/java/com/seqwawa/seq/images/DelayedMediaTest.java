@@ -56,20 +56,74 @@ class DelayedMediaTest {
         assertEquals(other, BridgeMedia.resolve(other));
     }
 
+    private static JsonObject json(String payload) {
+        return JsonParser.parseString(payload).getAsJsonObject();
+    }
+
+    private String withDiscordId(String payload, String discordId) {
+        var json = json(payload);
+        json.addProperty("discord_id", discordId);
+        return json.toString();
+    }
+
     @Test
-    void exactKlipyShareResolvesAfterDelayedDiscordMedia() {
+    void delayedKlipyMediaForASharePageIsShownAsItsOwnMessage() {
         assertEquals(URI.create(PAGE), MediaLinks.imageUri(PAGE));
         BridgeMedia.rewrite(payload("discord_chat", "Topdiamond2006", PAGE));
-        assertThrows(java.io.IOException.class, () -> MediaDownload.fetch(URI.create(PAGE)));
-        String delayed =
-                payload(
-                        "discord_media",
-                        "Topdiamond2006",
-                        null,
-                        PROXY,
-                        PROXY.replace(".mp4", ".webp"));
-        assertSame(delayed, BridgeMedia.rewrite(delayed));
-        assertEquals(URI.create(MP4), BridgeMedia.resolve(URI.create(PAGE)));
+        assertThrows(
+                MediaDownload.UnresolvedKlipyPage.class,
+                () -> MediaDownload.fetch(URI.create(PAGE)));
+        var result =
+                json(
+                        BridgeMedia.rewrite(
+                                payload(
+                                        "discord_media",
+                                        "Topdiamond2006",
+                                        null,
+                                        PROXY,
+                                        PROXY.replace(".mp4", ".webp"))));
+        assertEquals("discord_chat", result.get("type").getAsString());
+        assertEquals("Topdiamond2006", result.get("username").getAsString());
+        assertEquals(MP4, result.get("message").getAsString());
+        assertEquals(URI.create(PAGE), BridgeMedia.resolve(URI.create(PAGE)));
+    }
+
+    @Test
+    void identicalDisplayNamesWithDifferentDiscordIdsNeverCrossAssociate() {
+        BridgeMedia.rewrite(withDiscordId(payload("discord_chat", "Alice", PAGE), "1"));
+        var result =
+                json(
+                        BridgeMedia.rewrite(
+                                withDiscordId(payload("discord_media", "Alice", null, MP4), "2")));
+        assertEquals(URI.create(PAGE), BridgeMedia.resolve(URI.create(PAGE)));
+        assertEquals("discord_chat", result.get("type").getAsString());
+        assertEquals("2", result.get("discord_id").getAsString());
+        assertEquals(MP4, result.get("message").getAsString());
+    }
+
+    @Test
+    void anotherUsersEarlierGifLinkDoesNotHideDelayedMedia() {
+        BridgeMedia.rewrite(payload("discord_chat", "Alice", GIF));
+        BridgeMedia.rewrite(payload("discord_chat", "Bob", PAGE));
+        var result = json(BridgeMedia.rewrite(payload("discord_media", "Bob", null, PROXY)));
+        assertEquals("discord_chat", result.get("type").getAsString());
+        assertEquals("Bob", result.get("username").getAsString());
+        assertEquals(MP4, result.get("message").getAsString());
+    }
+
+    @Test
+    void oneSendersOutstandingMessagesNeverCrossAssociate() {
+        String other = PAGE.replace("wynncraft-hello-chat", "another-gif");
+        String otherMedia = MP4.replace("xiDo32fjTTjtLylez", "anotherAsset");
+        BridgeMedia.rewrite(payload("discord_chat", "Alice", PAGE));
+        BridgeMedia.rewrite(payload("discord_chat", "Alice", other));
+        for (String media : new String[] {otherMedia, MP4}) {
+            var result = json(BridgeMedia.rewrite(payload("discord_media", "Alice", null, media)));
+            assertEquals("discord_chat", result.get("type").getAsString());
+            assertEquals(media, result.get("message").getAsString());
+        }
+        assertEquals(URI.create(PAGE), BridgeMedia.resolve(URI.create(PAGE)));
+        assertEquals(URI.create(other), BridgeMedia.resolve(URI.create(other)));
     }
 
     @Test
@@ -165,8 +219,12 @@ class DelayedMediaTest {
     void directGifPreviewRecoversWhenActualMediaArrivesSeparately() {
         BridgeMedia.rewrite(payload("discord_chat", "Alice", GIF));
         assertEquals(URI.create(GIF), BridgeMedia.resolve(URI.create(GIF)));
-        BridgeMedia.rewrite(payload("discord_media", "Alice", null, PROXY));
+        // The asset itself identifies the GIF link. The delayed media still gets its own line,
+        // because nothing tells which message, if any, it belongs to.
+        var delayed = json(BridgeMedia.rewrite(payload("discord_media", "Bob", null, PROXY)));
         assertEquals(URI.create(MP4), BridgeMedia.resolve(URI.create(GIF)));
+        assertEquals("discord_chat", delayed.get("type").getAsString());
+        assertEquals(MP4, delayed.get("message").getAsString());
     }
 
     @Test

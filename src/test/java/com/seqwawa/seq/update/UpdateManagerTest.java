@@ -57,6 +57,37 @@ class UpdateManagerTest {
     }
 
     @Test
+    void onlyImagesBuildMetadataMarksACustomFeatureBuild() {
+        assertTrue(UpdateManager.isCustomFeatureBuild("1.10.8+images.1"));
+        assertTrue(UpdateManager.isCustomFeatureBuild("1.10.8+build.7.images"));
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8"));
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+build.7"));
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+imagesx"));
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8-images.1"));
+        // Build identifiers are separated by dots only.
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+build+images"));
+    }
+
+    @Test
+    void otherBuildMetadataStillChecksForUpdates(@TempDir Path gameDir) {
+        TestableUpdateManager manager = newDirectManager(gameDir);
+        manager.installedVersion = "1.10.8+build.7";
+        manager.enqueueFetchResult(CompletableFuture.completedFuture(release("v9.0.0")));
+
+        manager.checkForUpdatesManually();
+
+        assertEquals(1, manager.fetchCalls.get());
+        assertEquals(1, manager.prompts.size());
+    }
+
+    @Test
+    void buildMetadataDoesNotMakeAnOlderOrEqualReleaseLookNewer() {
+        assertFalse(UpdateManager.isNewer("v1.10.8", "1.10.8+build.7"));
+        assertFalse(UpdateManager.isNewer("v1.10.8", "1.10.9+build.7"));
+        assertTrue(UpdateManager.isNewer("v1.10.9", "1.10.8+build.7"));
+    }
+
+    @Test
     void customBuildNeverChecksForStockUpdates(@TempDir Path gameDir) {
         TestableUpdateManager manager = newDirectManager(gameDir);
         manager.installedVersion = "1.10.8+images.1";

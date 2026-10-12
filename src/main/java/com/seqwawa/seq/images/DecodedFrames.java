@@ -1,73 +1,70 @@
 package com.seqwawa.seq.images;
 
-import java.io.*;
-import java.nio.ByteBuffer;
-import java.nio.file.*;
-import java.util.*;
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.function.Consumer;
 
+/** Validating reader for the helper's pixel stream. */
 final class DecodedFrames {
-    private static final int MAGIC = 0x53494D31;
+    static final int MAGIC = 0x53494D31;
+    static final int MAX_SIDE = 256;
+    static final int MAX_FRAMES = 400;
+    static final long MAX_PIXELS = 12_000_000;
 
     private DecodedFrames() {}
 
     static void validate(int w, int h, int count) throws IOException {
         if (w < 1
                 || h < 1
-                || w > 256
-                || h > 256
+                || w > MAX_SIDE
+                || h > MAX_SIDE
                 || count < 1
-                || count > 400
-                || (long) w * h * count > 12_000_000)
+                || count > MAX_FRAMES
+                || (long) w * h * count > MAX_PIXELS)
             throw new IOException("Invalid decoded preview dimensions");
     }
 
-    static void write(Path path, ImageDecoder.Animation animation) throws IOException {
-        int w = animation.width(), h = animation.height(), count = animation.frames().size();
-        validate(w, h, count);
-        try (var out =
-                new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(path)))) {
-            out.writeInt(MAGIC);
-            out.writeInt(w);
-            out.writeInt(h);
-            out.writeInt(count);
-            for (var frame : animation.frames()) {
-                if (frame.argb().length != w * h
-                        || frame.durationMs() < 1
-                        || frame.durationMs() > 655350)
-                    throw new IOException("Invalid decoded frame");
-                out.writeInt(frame.durationMs());
-                for (int pixel : frame.argb()) out.writeInt(pixel);
-            }
-        }
+    /**
+     * Reads {@code MAGIC, width, height, count} and then, per frame, a duration followed by
+     * big-endian ARGB pixels, compressing each frame as it arrives.
+     *
+     * @throws IOException on any truncation, trailing byte, bound or budget violation
+     */
+    static MediaFrames read(InputStream stream, ByteBudget.Lease lease) throws IOException {
+        return read(stream, lease, frames -> {});
     }
 
-    static ImageDecoder.Animation read(Path path) throws IOException {
-        if (Files.size(path) < 16 || Files.size(path) > 48_001_616L)
-            throw new IOException("Invalid decoded preview length");
-        try (var in = Files.newInputStream(path)) {
-            return read(in);
-        }
-    }
-
-    static ImageDecoder.Animation read(InputStream stream) throws IOException {
-        var in = new DataInputStream(new BufferedInputStream(stream));
+    /**
+     * As {@link #read(InputStream, ByteBudget.Lease)}, handing the still-filling animation to
+     * {@code firstFrame} as soon as its first frame is published.
+     */
+    static MediaFrames read(
+            InputStream stream, ByteBudget.Lease lease, Consumer<MediaFrames> firstFrame)
+            throws IOException {
+        var in = new DataInputStream(new BufferedInputStream(stream, 1 << 16));
         if (in.readInt() != MAGIC) throw new IOException("Invalid decoded preview header");
         int w = in.readInt(), h = in.readInt(), count = in.readInt();
         validate(w, h, count);
-        var frames = new ArrayList<ImageDecoder.Frame>(count);
-        byte[] packed = new byte[w * h * 4];
-        var packedPixels = ByteBuffer.wrap(packed).asIntBuffer();
-        for (int i = 0; i < count; i++) {
-            int ms = in.readInt();
-            if (ms < 1 || ms > 655350) throw new IOException("Invalid decoded timing");
-            if (in.readNBytes(packed, 0, packed.length) != packed.length)
-                throw new EOFException("Truncated decoded frame");
-            int[] pixels = new int[w * h];
-            packedPixels.rewind();
-            packedPixels.get(pixels);
-            frames.add(new ImageDecoder.Frame(pixels, ms));
+        try (var writer = new MediaFrames.Writer(w, h, count, lease)) {
+            int frameBytes = w * h * 4;
+            lease.reserve(frameBytes);
+            try {
+                byte[] pixels = new byte[frameBytes];
+                for (int i = 0; i < count; i++) {
+                    int ms = in.readInt();
+                    if (!FrameTimeline.validDuration(ms))
+                        throw new IOException("Invalid decoded timing");
+                    in.readFully(pixels);
+                    writer.add(pixels, ms);
+                    if (i == 0) firstFrame.accept(writer.frames());
+                }
+            } finally {
+                lease.release(frameBytes);
+            }
+            if (in.read() != -1) throw new IOException("Unexpected decoded preview data");
+            return writer.finish();
         }
-        if (in.read() != -1) throw new IOException("Unexpected decoded preview data");
-        return new ImageDecoder.Animation(w, h, List.copyOf(frames));
     }
 }

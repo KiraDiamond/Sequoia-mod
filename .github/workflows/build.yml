@@ -45,14 +45,14 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: Run updater tests on Windows
-        run: .\gradlew.bat test --tests com.seqwawa.seq.update.UpdateManagerTest --tests com.seqwawa.seq.update.UpdateApplierTest --stacktrace
+      - name: Run updater and image preview tests on Windows
+        run: .\gradlew.bat test --tests com.seqwawa.seq.update.UpdateManagerTest --tests com.seqwawa.seq.update.UpdateApplierTest --tests "com.seqwawa.seq.images.*" --stacktrace
 
       - name: Upload Windows updater test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-updater-test-reports
+          name: windows-test-reports
           path: |
             build/reports/tests/test
             build/test-results/test

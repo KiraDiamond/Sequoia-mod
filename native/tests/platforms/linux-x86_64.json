@@ -1,0 +1,14 @@
+{
+  "platform": "linux-x86_64",
+  "decode_seconds": 0.11967301599997882,
+  "pixel_sha256": "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033c2c",
+  "pixel_bytes": 8650944,
+  "frames": 44,
+  "prepared_before_input": true,
+  "helper_confinement": "seccomp filter and no_new_privs active before input",
+  "malformed_input_rejected": true,
+  "os_denials": "OS_SANDBOX_DENIALS_OK: file read, file create, socket bind, loopback connect, process start",
+  "executables": {
+    "seqimages-decoder": "8b5db9d69f65828d79612ee3b44f7f1a0a6a80399c969b9578fe0d1884871151"
+  }
+}

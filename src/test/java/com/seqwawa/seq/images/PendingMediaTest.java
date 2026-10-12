@@ -23,12 +23,19 @@ class PendingMediaTest {
     }
 
     @Test
-    void unresolvedKlipyPageHasExplicitPendingState() {
-        assertThrows(
-                MediaDownload.PendingMedia.class,
-                () ->
-                        MediaDownload.fetch(
-                                URI.create("https://klipy.com/gifs/cat-please-please-cat")));
+    void unresolvedKlipyPageSaysWhereItsMediaAppearsInsteadOfWaiting() {
+        var failure =
+                assertThrows(
+                        MediaDownload.UnresolvedKlipyPage.class,
+                        () ->
+                                MediaDownload.fetch(
+                                        URI.create(
+                                                "https://klipy.com/gifs/cat-please-please-cat")));
+        var state = PreviewState.failedWith(failure, 100);
+        assertInstanceOf(PreviewState.Failed.class, state);
+        assertEquals(
+                "Klipy page link; its GIF appears as a separate bridge message",
+                PreviewState.status(state, 100 + TimeUnit.SECONDS.toNanos(60)));
     }
 
     @Test
@@ -54,14 +61,15 @@ class PendingMediaTest {
 
     @Test
     void pendingMessageExpiresWithoutCallingItASafetyBlock() {
-        var preview = new ImagePreviews.Preview();
-        preview.failed(new CompletionException(new MediaDownload.PendingMedia()), 100);
+        var state =
+                PreviewState.failedWith(
+                        new CompletionException(new MediaDownload.PendingMedia()), 100);
         assertEquals(
                 "Waiting for Discord media...",
-                preview.statusMessage(100 + TimeUnit.SECONDS.toNanos(6)));
+                PreviewState.status(state, 100 + TimeUnit.SECONDS.toNanos(6)));
         assertEquals(
                 "Image link unavailable; resend it in Discord",
-                preview.statusMessage(100 + TimeUnit.SECONDS.toNanos(30)));
+                PreviewState.status(state, 100 + TimeUnit.SECONDS.toNanos(30)));
     }
 
     @Test
@@ -77,10 +85,9 @@ class PendingMediaTest {
                                                         200, null, new byte[] {1, 2, 3}),
                                         System.nanoTime() + TimeUnit.SECONDS.toNanos(5)));
         assertFalse(failure instanceof MediaDownload.PendingMedia);
-        var preview = new ImagePreviews.Preview();
-        preview.failed(failure, 100);
         assertEquals(
-                "Image blocked, unavailable or outside safety limits", preview.statusMessage(100));
+                "Image blocked, unavailable or outside safety limits",
+                PreviewState.status(PreviewState.failedWith(failure, 100), 100));
     }
 
     @Test
@@ -98,21 +105,27 @@ class PendingMediaTest {
     }
 
     @Test
-    void delayedSignatureReplacesTheFailedSourceAndPendingStatusClears() {
-        BridgeMedia.clear();
-        var preview = new ImagePreviews.Preview();
-        preview.source = BARE;
-        preview.failed(new IOException("previous failure"), 100);
-        preview.failed(new MediaDownload.PendingMedia(), 101);
-        assertNull(preview.error);
-        assertEquals("Waiting for Discord media...", preview.statusMessage(102));
-        BridgeMedia.rewrite(
-                "{\"type\":\"discord_media\",\"username\":\"Alice\",\"media_urls\":[\""
-                        + SIGNED
-                        + "\"]}");
-        assertNotEquals(preview.source, BridgeMedia.resolve(BARE));
-        assertEquals(SIGNED, BridgeMedia.resolve(BARE));
-        var next = new ImagePreviews.Preview();
-        assertEquals("Loading image...", next.statusMessage(103));
+    void delayedSignatureReplacesTheWaitingPreviewWithAFreshLoad() throws Exception {
+        var loads = new java.util.concurrent.CopyOnWriteArrayList<URI>();
+        try (var harness =
+                new PreviewCacheHarness(
+                        (link, cancellation, lease, first) -> {
+                            loads.add(BridgeMedia.resolve(link));
+                            throw new MediaDownload.PendingMedia();
+                        })) {
+            var waiting = harness.cache().get(BARE);
+            harness.runMain();
+            assertEquals("Waiting for Discord media...", waiting.status(harness.cache().now()));
+            BridgeMedia.rewrite(
+                    "{\"type\":\"discord_media\",\"username\":\"Alice\",\"media_urls\":[\""
+                            + SIGNED
+                            + "\"]}");
+            var refreshed = harness.cache().get(BARE);
+            assertNotSame(waiting, refreshed);
+            assertEquals(SIGNED, refreshed.source);
+            assertEquals("Loading image...", refreshed.status(harness.cache().now()));
+            harness.runMain();
+            assertEquals(java.util.List.of(BARE, SIGNED), loads);
+        }
     }
 }

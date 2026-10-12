@@ -1,0 +1,20 @@
+{
+  "platform": "windows-x86_64",
+  "decode_seconds": 0.31947139999988394,
+  "pixel_sha256": "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033c2c",
+  "pixel_bytes": 8650944,
+  "frames": 44,
+  "prepared_before_input": true,
+  "malformed_input_rejected": true,
+  "os_denials": "APPCONTAINER_DENIALS_OK: user read write live loopback process",
+  "broker_cancellation": [
+    "BASELINE {'profiles': 0, 'aces': 0, 'leases': 0}",
+    "GRACEFUL_CANCEL_OK: 5 cancels; decoder exited; profiles, ACEs and leases restored",
+    "HARD_KILL_OK: 5 killed brokers; decoders exited; each next broker swept the previous leftovers",
+    "RECOVERY_OK: next decode revoked leftover grants, deleted profiles and cleared leases"
+  ],
+  "executables": {
+    "sandbox.exe": "744e29caf673bbd20a4bf51c3b7836447ef31e033e8deeac09777f4331113bd7",
+    "seqimages-decoder.exe": "b3f37f4ac3dd0f63c2cf1a050a3f1880ffa4649079b0adc1ba1deea1c47b9f0e"
+  }
+}

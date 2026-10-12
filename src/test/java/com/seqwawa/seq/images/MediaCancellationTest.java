@@ -13,7 +13,6 @@ import java.io.InterruptedIOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.InetSocketAddress;
 import java.net.URI;
-import java.util.Base64;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -43,26 +42,36 @@ class MediaCancellationTest {
     void finishedResourceIsNotAbortedLater() throws Exception {
         var cancellation = new MediaCancellation();
         var aborts = new AtomicInteger();
-        cancellation.attach(aborts::incrementAndGet);
-        cancellation.detach();
+        cancellation.attach(aborts::incrementAndGet).close();
         cancellation.cancel();
         assertEquals(0, aborts.get());
+    }
+
+    @Test
+    void cancellationAbortsEveryResourceAttachedAtOnce() throws Exception {
+        var cancellation = new MediaCancellation();
+        var helper = new AtomicInteger();
+        var request = new AtomicInteger();
+        cancellation.attach(helper::incrementAndGet);
+        // A download's request is attached and finished while the helper stays attached.
+        cancellation.attach(request::incrementAndGet).close();
+        cancellation.cancel();
+        assertEquals(1, helper.get(), "The helper abort must survive the request finishing");
+        assertEquals(0, request.get());
     }
 
     @Test
     void cancelledWorkCannotDownloadOrStartADecoder() {
         var cancellation = new MediaCancellation();
         cancellation.cancel();
-        byte[] png =
-                Base64.getDecoder()
-                        .decode(
-                                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z/AfAAQAAf8iCjrwAAAAAElFTkSuQmCC");
         assertThrows(
                 InterruptedIOException.class,
                 () ->
                         MediaDownload.fetch(
-                                URI.create("https://i.imgur.com/test.png"), cancellation));
-        assertThrows(InterruptedIOException.class, () -> IsolatedDecoder.decode(png, cancellation));
+                                URI.create("https://i.imgur.com/test.png"),
+                                cancellation,
+                                new ByteBudget(MediaFormat.MAX_BYTES).open()));
+        assertThrows(InterruptedIOException.class, () -> IsolatedDecoder.start(cancellation));
     }
 
     @Test
@@ -99,7 +108,8 @@ class MediaCancellationTest {
                             URI.class,
                             int.class,
                             long.class,
-                            MediaCancellation.class);
+                            MediaCancellation.class,
+                            ByteBudget.Lease.class);
             request.setAccessible(true);
             var uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/media");
             Future<?> result =
@@ -117,7 +127,8 @@ class MediaCancellationTest {
                                                                 System.nanoTime()
                                                                         + TimeUnit.SECONDS.toNanos(
                                                                                 10),
-                                                                cancellation));
+                                                                cancellation,
+                                                                new ByteBudget(1 << 20).open()));
                                 assertInstanceOf(IOException.class, error.getCause());
                             });
             assertTrue(entered.await(2, TimeUnit.SECONDS));

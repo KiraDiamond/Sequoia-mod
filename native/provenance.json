@@ -56,47 +56,49 @@
       "sha256": "df3c7b723fe62a4c989005adab40b41ac2fa1dedc2e5708fcf0e288918343326"
     },
     "src/main/resources/sandbox/linux-aarch64/seqimages-decoder": {
-      "bytes": 8262096,
-      "sha256": "a6c606f421d8186c2cee7eada3a5a5297a636cc6535632aac2e8ee9d0bca2ada"
+      "bytes": 8327632,
+      "sha256": "d267f9f07418992ec1a3d10076b422ec8f2a51c900db5b727269b24dba9df5b2"
     },
     "src/main/resources/sandbox/linux-x86_64/seqimages-decoder": {
-      "bytes": 9536496,
-      "sha256": "31e9ca1e12569ddb5449aab70fd417bb697de2ab7108f0848fe1fe094d8aae7d"
+      "bytes": 9589744,
+      "sha256": "8b5db9d69f65828d79612ee3b44f7f1a0a6a80399c969b9578fe0d1884871151"
     },
     "src/main/resources/sandbox/macos-aarch64/seqimages-decoder": {
-      "bytes": 8177456,
-      "sha256": "19f5247bd0bb6794f71a260330e3c45a00a0080afca768f97b0ec1c959b7c87d"
+      "bytes": 8177936,
+      "sha256": "bec61de4697a3c946a2c2cf87e8a5a25b0c848d1eebc28f147b910d3ccdcc383"
     },
     "src/main/resources/sandbox/macos-x86_64/seqimages-decoder": {
-      "bytes": 9428432,
-      "sha256": "82df0510631e1d4af70e2c37229f779f298185fcffeb53122b4f488429f19615"
+      "bytes": 9445280,
+      "sha256": "1b24ad23a9ad1bbe54499e6fc44ceeeb0f9b1f75da2caaaa104342517ebea3f0"
     },
     "src/main/resources/sandbox/windows-aarch64/sandbox.exe": {
-      "bytes": 232448,
-      "sha256": "20e9a91d993cff381d9ebc1eae4d246f77e5e15582e2ca9272c5c897a231778f"
+      "bytes": 279040,
+      "sha256": "bbe42edca4e469fbd93de38e446acc9fdab3882da07c45e72233589f9027233c"
     },
     "src/main/resources/sandbox/windows-aarch64/seqimages-decoder.exe": {
-      "bytes": 7674880,
-      "sha256": "9e52e2b37bdb20640ed14050c35ab4ba3e736ed15803161492d5308249b6c893"
+      "bytes": 7696896,
+      "sha256": "895a1b54df4c378ce6669e5ee54e0ba70d386be948cf4d3f4ccab225e86f6787"
     },
     "src/main/resources/sandbox/windows-x86_64/sandbox.exe": {
-      "bytes": 247296,
-      "sha256": "2a56d034042584080d6c8e2f164e9205b55a4e43db56fbd34c5d16a1c4c013db"
+      "bytes": 283136,
+      "sha256": "744e29caf673bbd20a4bf51c3b7836447ef31e033e8deeac09777f4331113bd7"
     },
     "src/main/resources/sandbox/windows-x86_64/seqimages-decoder.exe": {
-      "bytes": 9969664,
-      "sha256": "977a3f010a71cff722726b9ab6b9fb7725e7a1d57e92bc58cc276a173e60e34f"
+      "bytes": 9991680,
+      "sha256": "b3f37f4ac3dd0f63c2cf1a050a3f1880ffa4649079b0adc1ba1deea1c47b9f0e"
     }
   },
   "native_build": {
-    "source_commit": "271ffe88a6b96d651efbc7f8b06eb2f9ba4f3533",
-    "run": "https://github.com/KiraDiamond/SeqImageMod/actions/runs/38150742619",
-    "validation_receipts": "native/tests/platforms/"
+    "source_commit": "dba6af5da396ccc2a2d723ed439757da94b94978",
+    "run": "https://github.com/OneNoted/Sequoia-mod/actions/runs/38189688372",
+    "workflow": ".github/workflows/image-decoders.yml",
+    "validation_receipts": "native/tests/platforms/",
+    "note": "Hashes identify the committed files built by this run; they do not show that a rebuild reproduces them."
   },
   "windows_broker_build": {
     "source": "native/sandbox.cpp",
-    "source_sha256": "4482375ce24fa167c4ce8a11c9ba7c213eef22e4b74e71184f8e531a236dbecf",
-    "compiler": "MSVC, static CRT, Windows x86-64 host",
+    "source_sha256": "235cc75574503c1fc986f5ffcb8bb7e7e39b7e798dd357389271fa928d1b3bf9",
+    "compiler": "MSVC with static CRT, built natively on the windows-2025 and windows-11-arm runners",
     "targets": [
       "windows-x86_64",
       "windows-aarch64"
@@ -104,13 +106,17 @@
     "validation": {
       "windows-x86_64": [
         "exact decoded pixels",
-        "OS sandbox denials",
+        "helper prepared before input",
         "malformed input rejection",
-        "cancellation before child resume"
+        "AppContainer denials",
+        "graceful and hard-kill cancellation with profile, ACL and lease checks"
       ],
       "windows-aarch64": [
-        "cross-compiled",
-        "PE architecture verified; execution requires an ARM64 Windows runner"
+        "exact decoded pixels",
+        "helper prepared before input",
+        "malformed input rejection",
+        "AppContainer denials",
+        "graceful and hard-kill cancellation with profile, ACL and lease checks"
       ]
     },
     "cancellation_regression": "native/tests/windows-cancellation.py"
