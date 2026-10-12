@@ -188,7 +188,7 @@ final class PreviewCache {
         if (found != null) evict(found);
         var preview = new Preview(key, link, source, now);
         entries.put(key, preview);
-        shown = preview;
+        use(preview, now);
         load(preview);
         trim(now);
         return preview;
@@ -287,7 +287,8 @@ final class PreviewCache {
     /**
      * Draws a ready preview, creating its atlas on first use.
      *
-     * @return false if the preview is not ready, just failed, or waits a tick for texture memory
+     * @return false if the preview is not ready or just failed. A preview waiting a tick for
+     *     texture memory returns true and draws from the next frame.
      */
     boolean draw(Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
         long now = now();
@@ -296,7 +297,7 @@ final class PreviewCache {
         use(preview, now);
         try {
             if (preview.player == null) {
-                if (!makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes())) return false;
+                if (!makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes())) return true;
                 var player = new PreviewPlayer(frames, now);
                 preview.attach(player);
                 textureBytes += player.textureBytes();
@@ -312,13 +313,15 @@ final class PreviewCache {
 
     /**
      * Retires other previews' atlases, least recently drawn first, until {@code bytes} more fit
-     * the texture budget. Retired textures close on the next tick, after this frame renders, and
-     * count against the budget until then.
+     * the texture budget once retired atlases close. They close on the next tick, after this frame
+     * renders, and count against the budget until then.
      *
      * @return false if the new atlas must wait for that tick
      */
     private boolean makeTextureRoom(Preview drawing, long bytes) {
-        while (textureBytes + bytes > TEXTURE_BYTES) {
+        long closing = 0;
+        for (var player : retiredPlayers) closing += player.textureBytes();
+        while (textureBytes - closing + bytes > TEXTURE_BYTES) {
             Preview oldest = null;
             for (var preview : entries.values())
                 if (preview != drawing
@@ -326,10 +329,11 @@ final class PreviewCache {
                         && (oldest == null
                                 || preview.player.lastDrawn() < oldest.player.lastDrawn()))
                     oldest = preview;
-            if (oldest == null) return retiredPlayers.isEmpty();
+            if (oldest == null) break;
+            closing += oldest.player.textureBytes();
             retire(oldest.detachPlayer());
         }
-        return true;
+        return textureBytes + bytes <= TEXTURE_BYTES || retiredPlayers.isEmpty();
     }
 
     /** Client tick: frees idle textures and enforces every budget. */
