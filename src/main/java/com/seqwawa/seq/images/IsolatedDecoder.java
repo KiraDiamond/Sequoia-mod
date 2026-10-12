@@ -132,8 +132,8 @@ final class IsolatedDecoder {
         private final Thread diagnosticsReader;
         private final AtomicBoolean timedOut = new AtomicBoolean();
         private final AtomicBoolean aborting = new AtomicBoolean();
-        // What the helper had started when an abort killed it; null if no abort killed it.
-        // close() reaps these along with the helper.
+        // What a Windows broker had started when an abort killed it; null otherwise (a Unix
+        // helper starts nothing). close() reaps these along with the helper.
         private volatile List<ProcessHandle> abortKilledDescendants;
         private MediaCancellation.Registration abortRegistration;
         private boolean used;
@@ -239,7 +239,10 @@ final class IsolatedDecoder {
             }
             if (!requestBrokerCancel()) {
                 // The kill scans the process tree; keep that off the cancelling thread.
-                WATCHDOG.execute(this::killForAbort);
+                WATCHDOG.execute(
+                        () -> {
+                            if (process.isAlive()) killForAbort();
+                        });
                 return;
             }
             WATCHDOG.schedule(
