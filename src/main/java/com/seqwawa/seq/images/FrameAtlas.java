@@ -25,11 +25,6 @@ record FrameAtlas(int frameWidth, int frameHeight, int columns, int width, int h
                 frameWidth, frameHeight, columns, columns * frameWidth, rows * frameHeight);
     }
 
-    /** Layout for an animation at the 4096-pixel limit, before the GPU's own limit applies. */
-    static FrameAtlas of(MediaFrames frames) throws IOException {
-        return of(frames.width(), frames.height(), frames.frameCount(), MAX_SIDE);
-    }
-
     int x(int frame) {
         return frame % columns * frameWidth;
     }

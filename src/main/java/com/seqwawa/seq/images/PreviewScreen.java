@@ -161,7 +161,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
                 layout.closeY(),
                 CLOSE_SIZE,
                 CLOSE_SIZE,
-                color(closeHovered ? ACCENT_PRIMARY_DARK_HOVER : CONTROL_INPUT_HOVER));
+                color(closeHovered ? CONTROL_INPUT_HOVER : CONTROL_INPUT));
         canvas.drawText(
                 "x",
                 layout.closeX() + CLOSE_SIZE / 2,

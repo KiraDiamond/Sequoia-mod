@@ -40,12 +40,7 @@ final class PreviewPlayer implements AutoCloseable {
     PreviewPlayer(MediaFrames frames, long now) throws IOException {
         this.frames = frames;
         frameCount = frames.frameCount();
-        atlas =
-                FrameAtlas.of(
-                        frames.width(),
-                        frames.height(),
-                        frameCount,
-                        RenderSystem.getDevice().getMaxTextureSize());
+        atlas = atlasFor(frames);
         id = Identifier.fromNamespaceAndPath("seq", "image_preview_" + textureCounter++);
         texture = new AtlasTexture(atlas);
         Minecraft.getInstance().getTextureManager().register(id, texture);
@@ -65,6 +60,15 @@ final class PreviewPlayer implements AutoCloseable {
         }
         startNanos = now;
         lastDrawn = now;
+    }
+
+    /** The atlas layout this GPU allows for {@code frames}. Render thread only. */
+    static FrameAtlas atlasFor(MediaFrames frames) throws IOException {
+        return FrameAtlas.of(
+                frames.width(),
+                frames.height(),
+                frames.frameCount(),
+                RenderSystem.getDevice().getMaxTextureSize());
     }
 
     long textureBytes() {

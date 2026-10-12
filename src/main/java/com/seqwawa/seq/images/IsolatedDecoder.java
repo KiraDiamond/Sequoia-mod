@@ -268,7 +268,7 @@ final class IsolatedDecoder {
 
         private String diagnosticText() {
             try {
-                diagnosticsReader.join(Math.max(1, REAP_MILLIS));
+                diagnosticsReader.join(REAP_MILLIS);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -313,20 +313,8 @@ final class IsolatedDecoder {
 
     /** Waits for exit even if the caller was interrupted, then restores the interrupt. */
     static boolean waitUninterruptibly(Process process, long millis) {
-        boolean interrupted = Thread.interrupted();
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
-        try {
-            while (true) {
-                try {
-                    return process.waitFor(
-                            Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                }
-            }
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
-        }
+        return waitUninterruptibly(
+                process.onExit(), System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis));
     }
 
     /** Stops a worker process and waits for it to exit. */

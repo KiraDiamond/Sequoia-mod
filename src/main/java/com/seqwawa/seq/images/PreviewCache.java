@@ -286,7 +286,7 @@ final class PreviewCache {
         preview.touch(now);
         try {
             if (preview.player == null) {
-                makeTextureRoom(preview, FrameAtlas.of(frames).bytes());
+                makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes());
                 var player = new PreviewPlayer(frames, now);
                 preview.attach(player);
                 textureBytes += player.textureBytes();
