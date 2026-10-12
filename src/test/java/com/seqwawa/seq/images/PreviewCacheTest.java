@@ -134,7 +134,9 @@ class PreviewCacheTest {
     @Test
     void anyOneAtlasFitsTheTextureBudgetAlone() {
         // Making room for an atlas relies on this: retiring every other atlas always suffices.
-        assertTrue(4L * FrameAtlas.MAX_SIDE * FrameAtlas.MAX_SIDE <= PreviewCache.TEXTURE_BYTES);
+        int side = FrameAtlas.MAX_SIDE;
+        var largest = new FrameAtlas(side, side, 1, side, side);
+        assertTrue(largest.bytes() <= PreviewCache.TEXTURE_BYTES);
     }
 
     @Test

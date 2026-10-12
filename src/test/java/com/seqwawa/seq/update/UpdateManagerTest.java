@@ -64,6 +64,8 @@ class UpdateManagerTest {
         assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+build.7"));
         assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+imagesx"));
         assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8-images.1"));
+        // Build identifiers are separated by dots only.
+        assertFalse(UpdateManager.isCustomFeatureBuild("1.10.8+build+images"));
     }
 
     @Test
