@@ -148,6 +148,7 @@ def open_child(parent, pid):
 
 
 def wait_dead(handle, millis=5000):
+    """Waits for the process behind an open_child handle, killing it if it lingers; closes the handle."""
     try:
         if kernel.WaitForSingleObject(handle, millis) == WAIT_OBJECT_0:
             return True
@@ -181,13 +182,13 @@ for attempt in range(5):
     with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
         scratch = pathlib.Path(temp)
         process = start(broker, scratch)
-        child = wait_for_child(process)
+        decoder = wait_for_child(process)
         (scratch / "cancel").write_bytes(b"")
         # Keep stdin open until the broker exits, so the decoder cannot end on EOF first.
         process.wait(timeout=10)
         process.communicate(timeout=10)
         assert process.returncode == 3, ("cancel exit code", process.returncode)
-        assert wait_dead(child), "cancelled broker left its decoder running"
+        assert wait_dead(decoder), "cancelled broker left its decoder running"
         assert state() == baseline, ("graceful cancel left state", state(), baseline)
 print("GRACEFUL_CANCEL_OK: 5 cancels; decoder exited; profiles, ACEs and leases restored")
 
@@ -205,19 +206,19 @@ for attempt in range(3):
         process = start(paused_broker, pathlib.Path(temp))
         line = process.stdout.readline().decode().strip()
         assert line.startswith("SUSPENDED_CHILD "), (line, process.poll())
-        child = open_child(process.pid, int(line.split()[1]))
+        decoder = open_child(process.pid, int(line.split()[1]))
         process.kill()
         process.communicate(timeout=10)
-        assert wait_dead(child), "killing the broker orphaned its suspended decoder"
+        assert wait_dead(decoder), "killing the broker orphaned its suspended decoder"
         kills += 1
         assert outstanding() == (1, 1, 1), ("after kill", kills, outstanding())
 for attempt in range(2):
     with tempfile.TemporaryDirectory(prefix="seqimages-cancel-test-") as temp:
         process = start(broker, pathlib.Path(temp))
-        child = wait_for_child(process)
+        decoder = wait_for_child(process)
         process.kill()
         process.communicate(timeout=10)
-        assert wait_dead(child), "killing the broker orphaned its running decoder"
+        assert wait_dead(decoder), "killing the broker orphaned its running decoder"
         kills += 1
         assert outstanding() == (1, 1, 1), ("after kill", kills, outstanding())
 print(f"HARD_KILL_OK: {kills} killed brokers; decoders exited; each next broker swept the previous leftovers")

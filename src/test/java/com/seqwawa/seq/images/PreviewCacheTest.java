@@ -114,7 +114,9 @@ class PreviewCacheTest {
     @Test
     void previewsHoveredWithinTheSameSecondStillFitTheRetainedBudget() throws Exception {
         var shared = noise(140, 9);
-        assertTrue(3 * shared.bytes() > PreviewCache.RETAINED_BYTES);
+        assertTrue(
+                3 * shared.bytes() > PreviewCache.RETAINED_BYTES,
+                "the fixture must not fit three times in the retained budget");
         try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> shared)) {
             var cache = harness.cache();
             for (int i = 0; i < 2; i++) {

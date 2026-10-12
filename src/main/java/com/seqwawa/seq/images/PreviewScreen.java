@@ -190,7 +190,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
         var shown = preview;
         var current = layout;
         if (shown == null || current == null || shown.frames() == null) return;
-        float guiUnitsPerUiUnit = metrics.pixelRatio() / (float) metrics.minecraftGuiScale();
+        float guiUnitsPerUiUnit = metrics.guiUnitsPerUiUnit();
         ImagePreviews.draw(
                 shown,
                 graphics,

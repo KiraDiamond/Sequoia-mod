@@ -175,15 +175,10 @@ public class UpdateManager implements NotificationAccessor {
      * {@code 1.10.8+images.1}). Other build metadata, such as a CI build number, still updates.
      */
     static boolean isCustomFeatureBuild(String version) {
-        for (String identifier : buildMetadata(version).split("\\."))
+        String metadata = version.substring(withoutBuildMetadata(version).length());
+        for (String identifier : metadata.split("[+.]"))
             if (identifier.equalsIgnoreCase(CUSTOM_FEATURE_BUILD)) return true;
         return false;
-    }
-
-    /** SemVer build metadata after '+', or an empty string. */
-    private static String buildMetadata(String version) {
-        int plus = version.indexOf('+');
-        return plus < 0 ? "" : version.substring(plus + 1);
     }
 
     private static String withoutBuildMetadata(String version) {
