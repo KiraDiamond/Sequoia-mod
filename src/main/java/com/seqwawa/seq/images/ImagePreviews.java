@@ -197,7 +197,8 @@ public final class ImagePreviews {
             int left = Math.max(4, Math.min(mouseX + 12, graphics.guiWidth() - w - 12));
             int top = Math.max(4, Math.min(mouseY - h - 18, graphics.guiHeight() - h - 24));
             graphics.nextStratum();
-            if (draw(preview, graphics, left, top, w, h)) return true;
+            // Still showable when drawing waits a tick for texture memory.
+            if (draw(preview, graphics, left, top, w, h) || preview.frames() != null) return true;
         }
         graphics.setTooltipForNextFrame(
                 Minecraft.getInstance().font,
@@ -229,7 +230,10 @@ public final class ImagePreviews {
         return CACHE.get(uri);
     }
 
-    /** Draws a ready preview; returns false while it is loading or after it failed. */
+    /**
+     * Draws a ready preview; returns false while it is loading, after it failed, or while it
+     * waits a tick for texture memory.
+     */
     static boolean draw(
             PreviewCache.Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
         return CACHE.draw(preview, graphics, x, y, w, h);

@@ -26,8 +26,9 @@ import java.util.function.LongSupplier;
  * <p>Three independent budgets bound memory: compressed frames of ready previews, bytes held by
  * loads still in progress (including results waiting for the render thread), and GPU atlases.
  * A finished load's frames move from the in-flight budget to the retained one when the render
- * thread installs them. A preview drawn within the last second is active
- * and is never evicted, so it cannot be dropped and fetched again while on screen.
+ * thread installs them. The preview on screen, the one most recently requested or drawn while
+ * used within the last second, is never evicted, so it cannot be dropped and fetched again while
+ * visible. Every other preview is evicted, least recently used first, to keep the limits.
  */
 final class PreviewCache {
     static final long RETAINED_BYTES = 64L * 1024 * 1024;
@@ -152,6 +153,8 @@ final class PreviewCache {
     private final ByteBudget inFlight = new ByteBudget(IN_FLIGHT_BYTES);
     private final Set<ByteBudget.Lease> postedLeases = ConcurrentHashMap.newKeySet();
     private final LongSupplier clock;
+    // The only preview trim() keeps over the limits; at most one preview is drawn per frame.
+    private Preview shown;
     private long retainedBytes;
     private long textureBytes;
 
@@ -178,13 +181,14 @@ final class PreviewCache {
         URI source = BridgeMedia.resolve(link);
         Preview found = entries.get(key);
         if (found != null && source.equals(found.source)) {
-            found.touch(now);
+            use(found, now);
             return found;
         }
         // A delayed signed Discord URL changes the source; replace the stale preview.
         if (found != null) evict(found);
         var preview = new Preview(key, link, source, now);
         entries.put(key, preview);
+        shown = preview;
         load(preview);
         trim(now);
         return preview;
@@ -238,6 +242,11 @@ final class PreviewCache {
         }
     }
 
+    private void use(Preview preview, long now) {
+        preview.touch(now);
+        shown = preview;
+    }
+
     private boolean post(Runnable task) {
         try {
             mainThread.execute(task);
@@ -249,7 +258,7 @@ final class PreviewCache {
 
     /** Starts showing an animation whose remaining frames are still being compressed. */
     private void show(Preview preview, MediaCancellation cancellation, MediaFrames frames) {
-        if (entries.get(preview.key) == preview && !cancellation.isCancelled()) preview.show(frames);
+        if (!cancellation.isCancelled()) preview.show(frames);
     }
 
     private void finish(
@@ -259,7 +268,8 @@ final class PreviewCache {
             Exception error,
             ByteBudget.Lease lease) {
         try {
-            if (entries.get(preview.key) != preview || cancellation.isCancelled()) return;
+            // Removing a preview cancels its load, so this also skips evicted previews.
+            if (cancellation.isCancelled()) return;
             long now = now();
             if (error == null) {
                 retainedBytes += preview.complete(frames);
@@ -277,16 +287,16 @@ final class PreviewCache {
     /**
      * Draws a ready preview, creating its atlas on first use.
      *
-     * @return false if the preview is not ready or just failed
+     * @return false if the preview is not ready, just failed, or waits a tick for texture memory
      */
     boolean draw(Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
         long now = now();
         var frames = preview.frames();
         if (frames == null || entries.get(preview.key) != preview) return false;
-        preview.touch(now);
+        use(preview, now);
         try {
             if (preview.player == null) {
-                makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes());
+                if (!makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes())) return false;
                 var player = new PreviewPlayer(frames, now);
                 preview.attach(player);
                 textureBytes += player.textureBytes();
@@ -302,9 +312,12 @@ final class PreviewCache {
 
     /**
      * Retires other previews' atlases, least recently drawn first, until {@code bytes} more fit
-     * the texture budget. Retired textures close on the next tick, after this frame renders.
+     * the texture budget. Retired textures close on the next tick, after this frame renders, and
+     * count against the budget until then.
+     *
+     * @return false if the new atlas must wait for that tick
      */
-    private void makeTextureRoom(Preview drawing, long bytes) {
+    private boolean makeTextureRoom(Preview drawing, long bytes) {
         while (textureBytes + bytes > TEXTURE_BYTES) {
             Preview oldest = null;
             for (var preview : entries.values())
@@ -313,9 +326,10 @@ final class PreviewCache {
                         && (oldest == null
                                 || preview.player.lastDrawn() < oldest.player.lastDrawn()))
                     oldest = preview;
-            if (oldest == null) return;
+            if (oldest == null) return retiredPlayers.isEmpty();
             retire(oldest.detachPlayer());
         }
+        return true;
     }
 
     /** Client tick: frees idle textures and enforces every budget. */
@@ -330,19 +344,22 @@ final class PreviewCache {
         for (var iterator = entries.values().iterator();
                 textureBytes > TEXTURE_BYTES && iterator.hasNext(); ) {
             var preview = iterator.next();
-            if (preview.player != null && !preview.active(now)) retire(preview.detachPlayer());
+            if (preview.player != null && !preview.active(now)) {
+                retire(preview.detachPlayer());
+                closeRetiredPlayers();
+            }
         }
         trim(now);
         closeRetiredPlayers();
     }
 
-    /** Evicts least recently used inactive previews until every limit holds. */
+    /** Evicts least recently used previews, except the one on screen, until every limit holds. */
     private void trim(long now) {
         Iterator<Preview> eldest = entries.values().iterator();
         while ((entries.size() > MAX_ENTRIES || retainedBytes > RETAINED_BYTES)
                 && eldest.hasNext()) {
             var preview = eldest.next();
-            if (preview.active(now)) continue;
+            if (preview == shown && preview.active(now)) continue;
             eldest.remove();
             release(preview);
         }
@@ -360,13 +377,14 @@ final class PreviewCache {
 
     /** Defers closing a player's texture to the next tick, outside rendering. */
     private void retire(PreviewPlayer player) {
-        if (player == null) return;
-        textureBytes -= player.textureBytes();
-        retiredPlayers.add(player);
+        if (player != null) retiredPlayers.add(player);
     }
 
     private void closeRetiredPlayers() {
-        retiredPlayers.forEach(PreviewPlayer::close);
+        for (var player : retiredPlayers) {
+            textureBytes -= player.textureBytes();
+            player.close();
+        }
         retiredPlayers.clear();
     }
 
@@ -374,6 +392,7 @@ final class PreviewCache {
     void clear() {
         entries.values().forEach(this::release);
         entries.clear();
+        shown = null;
         closeRetiredPlayers();
         retainedBytes = 0;
         // Results posted but never installed: dropped by a disconnect or now obsolete.

@@ -112,6 +112,24 @@ class PreviewCacheTest {
     }
 
     @Test
+    void previewsHoveredWithinTheSameSecondStillFitTheRetainedBudget() throws Exception {
+        var shared = noise(140, 9);
+        assertTrue(3 * shared.bytes() > PreviewCache.RETAINED_BYTES);
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> shared)) {
+            var cache = harness.cache();
+            for (int i = 0; i < 2; i++) {
+                cache.get(link("passed-over-" + i));
+                harness.advance(FRAME);
+            }
+            var shown = cache.get(link("shown"));
+            for (int i = 0; i < 3; i++) harness.runMain();
+            assertTrue(cache.retainedBytes() <= PreviewCache.RETAINED_BYTES, "over budget");
+            assertNotNull(shown.frames(), "the preview on screen was evicted");
+            assertEquals(2, cache.size(), "only the least recently used preview had to go");
+        }
+    }
+
+    @Test
     void firstFrameShowsWhileTheRestIsChargedAsInFlight() throws Exception {
         var release = new java.util.concurrent.CountDownLatch(1);
         try (var harness =
