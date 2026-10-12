@@ -1,0 +1,14 @@
+{
+  "platform": "macos-aarch64",
+  "decode_seconds": 0.1615837089999559,
+  "pixel_sha256": "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033c2c",
+  "pixel_bytes": 8650944,
+  "frames": 44,
+  "prepared_before_input": true,
+  "helper_confinement": "Seatbelt active before input",
+  "malformed_input_rejected": true,
+  "os_denials": "OS_SANDBOX_DENIALS_OK: file read, file create, socket bind, loopback connect, process start",
+  "executables": {
+    "seqimages-decoder": "bec61de4697a3c946a2c2cf87e8a5a25b0c848d1eebc28f147b910d3ccdcc383"
+  }
+}
