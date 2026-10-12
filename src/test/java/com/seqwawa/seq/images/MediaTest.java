@@ -31,6 +31,24 @@ class MediaTest {
     }
 
     @Test
+    void recognizesNumberedGiphyMediaHosts() {
+        for (int i = 0; i <= 4; i++) {
+            String url = "https://media" + i + ".giphy.com/media/preview/giphy.gif";
+            assertEquals(List.of(URI.create(url)), MediaLinks.find(url), url);
+        }
+    }
+
+    @Test
+    void refusesUnknownOrDisguisedGiphyMediaHosts() {
+        for (String host : List.of(
+                "media5.giphy.com", "media01.giphy.com", "media0.giphy.com.evil.test",
+                "evil.media0.giphy.com")) {
+            String url = "https://" + host + "/preview.gif";
+            assertTrue(MediaLinks.find(url).isEmpty(), url);
+        }
+    }
+
+    @Test
     void refusesUntrustedOrDisguisedDestinations() {
         for (String url :
                 List.of(
