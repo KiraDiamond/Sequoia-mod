@@ -336,7 +336,10 @@ final class PreviewCache {
         return textureBytes + bytes <= TEXTURE_BYTES || retiredPlayers.isEmpty();
     }
 
-    /** Client tick: frees idle textures and enforces every budget. */
+    /**
+     * Client tick: closes retired textures, frees idle ones and trims to the retained budget. The
+     * texture budget is enforced when an atlas is created.
+     */
     void maintain() {
         long now = now();
         closeRetiredPlayers();
@@ -345,14 +348,6 @@ final class PreviewCache {
                     && !preview.active(now)
                     && now - preview.player.lastDrawn() > IDLE_TEXTURE_NANOS)
                 retire(preview.detachPlayer());
-        for (var iterator = entries.values().iterator();
-                textureBytes > TEXTURE_BYTES && iterator.hasNext(); ) {
-            var preview = iterator.next();
-            if (preview.player != null && !preview.active(now)) {
-                retire(preview.detachPlayer());
-                closeRetiredPlayers();
-            }
-        }
         trim(now);
         closeRetiredPlayers();
     }
