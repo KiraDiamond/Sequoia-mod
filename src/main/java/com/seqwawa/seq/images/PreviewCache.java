@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
@@ -22,8 +24,9 @@ import java.util.function.LongSupplier;
  * Previews keyed by chat link. Owned by the render thread; workers only download and decode.
  *
  * <p>Three independent budgets bound memory: compressed frames of ready previews, bytes held by
- * loads still in progress, and GPU atlases. A finished load's frames move from the in-flight
- * budget to the retained one when the render thread installs them. A preview drawn within the last second is active
+ * loads still in progress (including results waiting for the render thread), and GPU atlases.
+ * A finished load's frames move from the in-flight budget to the retained one when the render
+ * thread installs them. A preview drawn within the last second is active
  * and is never evicted, so it cannot be dropped and fetched again while on screen.
  */
 final class PreviewCache {
@@ -147,6 +150,7 @@ final class PreviewCache {
     private final Executor mainThread;
     private final Loader loader;
     private final ByteBudget inFlight = new ByteBudget(IN_FLIGHT_BYTES);
+    private final Set<ByteBudget.Lease> postedLeases = ConcurrentHashMap.newKeySet();
     private final LongSupplier clock;
     private long retainedBytes;
     private long textureBytes;
@@ -198,9 +202,8 @@ final class PreviewCache {
     }
 
     private void run(Preview preview, MediaCancellation cancellation) {
-        // The worker owns the lease: the client drops queued main-thread tasks while it
-        // disconnects, so releasing it from a posted task could leak the reservation.
-        try (var lease = inFlight.open()) {
+        var lease = inFlight.open();
+        try {
             MediaFrames frames = null;
             Exception failure = null;
             try {
@@ -215,18 +218,32 @@ final class PreviewCache {
             } catch (Exception error) {
                 failure = error;
             }
-            if (cancellation.isCancelled()) return;
+            if (cancellation.isCancelled()) {
+                lease.close();
+                return;
+            }
             var loaded = frames;
             var error = failure;
-            post(() -> finish(preview, cancellation, loaded, error));
+            // A posted result stays charged until the render thread installs it, or until the
+            // next clear() if the client drops it while disconnecting.
+            postedLeases.add(lease);
+            if (!post(() -> finish(preview, cancellation, loaded, error, lease))) {
+                postedLeases.remove(lease);
+                lease.close();
+            }
+        } catch (RuntimeException | Error unexpected) {
+            postedLeases.remove(lease);
+            lease.close();
+            throw unexpected;
         }
     }
 
-    private void post(Runnable task) {
+    private boolean post(Runnable task) {
         try {
             mainThread.execute(task);
+            return true;
         } catch (RejectedExecutionException stopping) {
-            // The client is shutting down; the result is no longer needed.
+            return false;
         }
     }
 
@@ -236,15 +253,24 @@ final class PreviewCache {
     }
 
     private void finish(
-            Preview preview, MediaCancellation cancellation, MediaFrames frames, Exception error) {
-        if (entries.get(preview.key) != preview || cancellation.isCancelled()) return;
-        long now = now();
-        if (error == null) {
-            retainedBytes += preview.complete(frames);
-            trim(now);
-        } else {
-            retire(preview.fail(PreviewState.failedWith(error, now)));
-            LOG.debug("Image preview failed: {}", preview.status(now), error);
+            Preview preview,
+            MediaCancellation cancellation,
+            MediaFrames frames,
+            Exception error,
+            ByteBudget.Lease lease) {
+        try {
+            if (entries.get(preview.key) != preview || cancellation.isCancelled()) return;
+            long now = now();
+            if (error == null) {
+                retainedBytes += preview.complete(frames);
+                trim(now);
+            } else {
+                retire(preview.fail(PreviewState.failedWith(error, now)));
+                LOG.debug("Image preview failed: {}", preview.status(now), error);
+            }
+        } finally {
+            postedLeases.remove(lease);
+            lease.close();
         }
     }
 
@@ -350,6 +376,12 @@ final class PreviewCache {
         entries.clear();
         closeRetiredPlayers();
         retainedBytes = 0;
+        // Results posted but never installed: dropped by a disconnect or now obsolete.
+        postedLeases.removeIf(
+                lease -> {
+                    lease.close();
+                    return true;
+                });
     }
 
     long retainedBytes() {

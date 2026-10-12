@@ -173,7 +173,38 @@ class PreviewCacheTest {
             harness.cache().get(link("dropped"));
             for (int i = 0; i < 2_000 && harness.pendingMain() == 0; i++) Thread.sleep(5);
             assertEquals(1, harness.pendingMain());
+            assertTrue(harness.cache().inFlightBytes() > 0, "a posted result stays charged");
+            // A disconnect drops queued tasks and then clears the previews.
             harness.dropMain();
+            harness.cache().clear();
+            harness.awaitInFlightReleased();
+        }
+    }
+
+    @Test
+    void resultsWaitingForAStalledRenderThreadStayInsideTheBudget() throws Exception {
+        long share = 40L * 1024 * 1024;
+        var shared = noise(1, 7);
+        var reserved = new AtomicInteger();
+        var finished = new java.util.concurrent.CountDownLatch(3);
+        try (var harness =
+                new PreviewCacheHarness(
+                        (link, cancellation, lease, first) -> {
+                            try {
+                                lease.reserve(share);
+                                reserved.incrementAndGet();
+                                return shared;
+                            } finally {
+                                finished.countDown();
+                            }
+                        })) {
+            for (int i = 0; i < 3; i++) harness.cache().get(link("stalled-" + i));
+            assertTrue(finished.await(10, TimeUnit.SECONDS));
+            for (int i = 0; i < 200 && harness.pendingMain() < 3; i++) Thread.sleep(5);
+            // Nothing has been installed, yet the queued results are still counted.
+            assertEquals(2, reserved.get(), "the third result must not fit beside two waiting ones");
+            assertEquals(2 * share, harness.cache().inFlightBytes());
+            for (int i = 0; i < 3; i++) harness.runMain();
             harness.awaitInFlightReleased();
         }
     }

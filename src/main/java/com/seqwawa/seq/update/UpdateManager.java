@@ -174,6 +174,11 @@ public class UpdateManager implements NotificationAccessor {
      * {@code images} identifier in the SemVer build metadata (for example
      * {@code 1.10.8+images.1}). Other build metadata, such as a CI build number, still updates.
      */
+    private static String withoutBuildMetadata(String version) {
+        int plus = version.indexOf('+');
+        return plus < 0 ? version : version.substring(0, plus);
+    }
+
     static boolean isCustomFeatureBuild(String version) {
         int plus = version.indexOf('+');
         if (plus < 0) return false;
@@ -645,12 +650,13 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     static boolean isNewer(String latest, String installed) {
-        Matcher latestMatcher = SEMVER_PATTERN.matcher(latest);
+        Matcher latestMatcher = SEMVER_PATTERN.matcher(withoutBuildMetadata(latest));
         if (!latestMatcher.matches()) {
             return false;
         }
 
-        Matcher installedMatcher = SEMVER_PATTERN.matcher(installed);
+        // SemVer build metadata never affects precedence: 1.10.8+build.7 is release 1.10.8.
+        Matcher installedMatcher = SEMVER_PATTERN.matcher(withoutBuildMetadata(installed));
         if (!installedMatcher.matches()) {
             return !latest.equals(installed);
         }

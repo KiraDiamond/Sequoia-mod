@@ -79,6 +79,13 @@ class UpdateManagerTest {
     }
 
     @Test
+    void buildMetadataDoesNotMakeAnOlderOrEqualReleaseLookNewer() {
+        assertFalse(UpdateManager.isNewer("v1.10.8", "1.10.8+build.7"));
+        assertFalse(UpdateManager.isNewer("v1.10.8", "1.10.9+build.7"));
+        assertTrue(UpdateManager.isNewer("v1.10.9", "1.10.8+build.7"));
+    }
+
+    @Test
     void customBuildNeverChecksForStockUpdates(@TempDir Path gameDir) {
         TestableUpdateManager manager = newDirectManager(gameDir);
         manager.installedVersion = "1.10.8+images.1";
