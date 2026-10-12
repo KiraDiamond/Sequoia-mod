@@ -132,6 +132,12 @@ class PreviewCacheTest {
     }
 
     @Test
+    void anyOneAtlasFitsTheTextureBudgetAlone() {
+        // Making room for an atlas relies on this: retiring every other atlas always suffices.
+        assertTrue(4L * FrameAtlas.MAX_SIDE * FrameAtlas.MAX_SIDE <= PreviewCache.TEXTURE_BYTES);
+    }
+
+    @Test
     void firstFrameShowsWhileTheRestIsChargedAsInFlight() throws Exception {
         var release = new java.util.concurrent.CountDownLatch(1);
         try (var harness =

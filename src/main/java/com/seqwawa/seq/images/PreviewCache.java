@@ -287,8 +287,8 @@ final class PreviewCache {
     /**
      * Draws a ready preview, creating its atlas on first use.
      *
-     * @return false if the preview is not ready or just failed. A preview waiting a tick for
-     *     texture memory returns true and draws from the next frame.
+     * @return false if the preview is not ready or just failed. A preview waiting for retired
+     *     atlases to close returns true and draws once the next client tick has closed them.
      */
     boolean draw(Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
         long now = now();
@@ -333,7 +333,8 @@ final class PreviewCache {
             closing += oldest.player.textureBytes();
             retire(oldest.detachPlayer());
         }
-        return textureBytes + bytes <= TEXTURE_BYTES || retiredPlayers.isEmpty();
+        // Any one atlas fits the budget alone, so retiring every other atlas always makes room.
+        return textureBytes + bytes <= TEXTURE_BYTES;
     }
 
     /**
