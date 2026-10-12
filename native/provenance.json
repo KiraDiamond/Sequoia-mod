@@ -72,32 +72,32 @@
       "sha256": "1b24ad23a9ad1bbe54499e6fc44ceeeb0f9b1f75da2caaaa104342517ebea3f0"
     },
     "src/main/resources/sandbox/windows-aarch64/sandbox.exe": {
-      "bytes": 278528,
-      "sha256": "7fd0457e5dad1075c3ace255e0ee92d41cd2851120cf7055e52a157a17d15b36"
+      "bytes": 279040,
+      "sha256": "bbe42edca4e469fbd93de38e446acc9fdab3882da07c45e72233589f9027233c"
     },
     "src/main/resources/sandbox/windows-aarch64/seqimages-decoder.exe": {
       "bytes": 7696896,
-      "sha256": "a4a140852b6e97a033542f7998527b8129e32eb7a55cf85fb34b62f93ff06bde"
+      "sha256": "895a1b54df4c378ce6669e5ee54e0ba70d386be948cf4d3f4ccab225e86f6787"
     },
     "src/main/resources/sandbox/windows-x86_64/sandbox.exe": {
       "bytes": 283136,
-      "sha256": "8fe2d257d57430af95b44b878d37c337b4332d07b9fb2f6841d49b17fbbe187e"
+      "sha256": "744e29caf673bbd20a4bf51c3b7836447ef31e033e8deeac09777f4331113bd7"
     },
     "src/main/resources/sandbox/windows-x86_64/seqimages-decoder.exe": {
       "bytes": 9991680,
-      "sha256": "3afee0c65705a521fb37b93f2caa766976f2a3cba424f4e8f88596e738a2b62f"
+      "sha256": "b3f37f4ac3dd0f63c2cf1a050a3f1880ffa4649079b0adc1ba1deea1c47b9f0e"
     }
   },
   "native_build": {
-    "source_commit": "fab5696de84c95dd7e3af61d921abf9922a1cf55",
-    "run": "https://github.com/OneNoted/Sequoia-mod/actions/runs/38185226543",
+    "source_commit": "dba6af5da396ccc2a2d723ed439757da94b94978",
+    "run": "https://github.com/OneNoted/Sequoia-mod/actions/runs/38189688372",
     "workflow": ".github/workflows/image-decoders.yml",
     "validation_receipts": "native/tests/platforms/",
     "note": "Hashes identify the committed files built by this run; they do not show that a rebuild reproduces them."
   },
   "windows_broker_build": {
     "source": "native/sandbox.cpp",
-    "source_sha256": "30c253e7829a207dd87a6db670af85b2e5e1438fb6235abf15504765a26bbff8",
+    "source_sha256": "235cc75574503c1fc986f5ffcb8bb7e7e39b7e798dd357389271fa928d1b3bf9",
     "compiler": "MSVC with static CRT, built natively on the windows-2025 and windows-11-arm runners",
     "targets": [
       "windows-x86_64",

@@ -1,6 +1,6 @@
 {
   "platform": "macos-aarch64",
-  "decode_seconds": 0.1615837089999559,
+  "decode_seconds": 0.17123583400007192,
   "pixel_sha256": "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033c2c",
   "pixel_bytes": 8650944,
   "frames": 44,
