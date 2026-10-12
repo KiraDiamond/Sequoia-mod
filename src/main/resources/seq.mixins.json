@@ -16,6 +16,7 @@
     "FontPreparedTextBuilderMixin",
     "GameRendererMixin",
     "GuildAllianceSnapshotPacketMixin",
+    "GuiTitleAccessor",
     "InGameHudMixin",
     "NameTagFeatureRendererMixin",
     "ParticleEngineMixin",

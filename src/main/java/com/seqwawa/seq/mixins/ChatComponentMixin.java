@@ -17,8 +17,10 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Applies Sequoia Discord rank presentation and world-name links just before a chat
@@ -33,6 +35,11 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  */
 @Mixin(ChatComponent.class)
 public class ChatComponentMixin {
+
+    @Inject(method = "clearMessages", at = @At("HEAD"))
+    private void seq$resetChatSequences(boolean clearSentMessages, CallbackInfo ci) {
+        DiscordRankChatDecorator.resetChatSequences();
+    }
 
     @Unique
     private final Runnable seq$refreshGuildTags = this::seq$updateGuildTagLines;

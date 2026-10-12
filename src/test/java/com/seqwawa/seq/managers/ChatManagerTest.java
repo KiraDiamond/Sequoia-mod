@@ -28,6 +28,47 @@ import com.seqwawa.seq.integrations.WynntilsGuildRankAccess;
 class ChatManagerTest {
 
     @Test
+    void queueCommandsExtractOnlyLowercaseGuildShorthand() {
+        assertEquals("hello", ChatManager.queueGuildCommandMessage("g hello"));
+        assertEquals("chat hello", ChatManager.queueGuildCommandMessage("g chat hello"));
+        assertEquals("hello  guild", ChatManager.queueGuildCommandMessage("g \t hello  guild  "));
+        assertEquals("hello", ChatManager.queueGuildCommandMessage("g\thello"));
+        for (String command : List.of("g", "g ", "g\t  ", "G hello", "guild chat hello", "gc hello", "ghello", " g hello", "seq connect")) {
+            assertNull(ChatManager.queueGuildCommandMessage(command), command);
+        }
+        assertNull(ChatManager.queueGuildCommandMessage(null));
+    }
+
+    @Test
+    void queuedGuildCommandsSendOnceAndCancelEvenWhenSendingFails() {
+        var sent = new java.util.ArrayList<String>();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        assertFalse(ChatManager.allowQueueGuildCommand("g hello", true, message -> {
+            sent.add(message);
+            return true;
+        }, failures::incrementAndGet));
+        assertEquals(List.of("hello"), sent);
+        assertEquals(0, failures.get());
+
+        assertFalse(ChatManager.allowQueueGuildCommand("g another", true, message -> {
+            sent.add(message);
+            return false;
+        }, failures::incrementAndGet));
+        assertEquals(List.of("hello", "another"), sent);
+        assertEquals(1, failures.get());
+
+        assertTrue(ChatManager.allowQueueGuildCommand("g normal", false, message -> {
+            throw new AssertionError("Non-queue commands must pass through");
+        }, failures::incrementAndGet));
+        for (String command : List.of("g", "g ", "guild chat hello", "seq connect")) {
+            assertTrue(ChatManager.allowQueueGuildCommand(command, true, message -> {
+                throw new AssertionError("Unmatched commands must pass through");
+            }, failures::incrementAndGet));
+        }
+        assertEquals(1, failures.get());
+    }
+
+    @Test
     void guildStylingIsIndependentOfDiscordSettingsAndHonorsGuildDecorationGate() {
         var previousRanks = SeqClient.showDiscordRanksSetting;
         var previousChat = SeqClient.showDiscordChatSetting;
@@ -80,6 +121,42 @@ class ChatManagerTest {
             assertFragmentColor(ChatManager.guildContinuationLine("continued"), "continued", 0xA1B2C3);
         } finally {
             SeqClient.inGameGuildChatTextColorSetting = previous;
+        }
+    }
+
+    @Test
+    void guildContinuationSpacingMatchesTheFullPrefixAndPreservesTheMarkerFont() {
+        GuildChatMarkers.reset();
+        java.util.function.ToIntFunction<Component> width = component -> component.getString().codePoints()
+                .map(glyph -> switch (glyph) {
+                    case '➜', ' ' -> 4;
+                    case '\uF8FE' -> -1;
+                    default -> 1;
+                }).sum();
+        try {
+            Component fallbackArrow = DiscordRankChatDecorator.guildPrefix(false);
+            var fallbackBar = DiscordRankChatDecorator.alignPrefixToReference(
+                    DiscordRankChatDecorator.guildPrefix(true), fallbackArrow, width);
+            assertEquals(width.applyAsInt(fallbackArrow), width.applyAsInt(fallbackBar));
+            assertEquals("│ " + "\uF8FD".repeat(3), fallbackBar.getString());
+
+            var style = Style.EMPTY.withFont(new net.minecraft.network.chat.FontDescription.Resource(
+                    net.minecraft.resources.Identifier.fromNamespaceAndPath("test", "guild")))
+                    .withColor(ChatFormatting.AQUA);
+            GuildChatMarkers.observe(ComponentTextEditor.flatten(Component.literal("abcd").withStyle(style)), 4);
+            GuildChatMarkers.observe(ComponentTextEditor.flatten(Component.literal("x").withStyle(style)), 1);
+            Component arrow = DiscordRankChatDecorator.guildPrefix(false);
+            var bar = DiscordRankChatDecorator.alignPrefixToReference(
+                    DiscordRankChatDecorator.guildPrefix(true), arrow, width);
+            assertEquals(width.applyAsInt(arrow), width.applyAsInt(bar));
+            assertEquals("x" + "\uF8FD".repeat(7), bar.getString());
+            var fragments = ComponentTextEditor.flatten(bar);
+            assertEquals(style, fragments.getFirst().style());
+            assertEquals(new net.minecraft.network.chat.FontDescription.Resource(
+                    net.minecraft.resources.Identifier.fromNamespaceAndPath("seq", "discord_bridge")),
+                    fragments.getLast().style().getFont());
+        } finally {
+            GuildChatMarkers.reset();
         }
     }
 

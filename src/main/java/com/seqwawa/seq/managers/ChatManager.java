@@ -2,6 +2,7 @@ package com.seqwawa.seq.managers;
 
 import com.seqwawa.seq.mixins.ClientPacketListenerMixin;
 import net.minecraft.ChatFormatting;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.regex.Matcher;
@@ -155,6 +157,38 @@ public class ChatManager {
 
     public ChatManager() {
         registerIncomingHook();
+        ClientSendMessageEvents.ALLOW_COMMAND.register(ChatManager::allowQueueGuildCommand);
+    }
+
+    private static boolean allowQueueGuildCommand(String command) {
+        return allowQueueGuildCommand(command, ServerQueueDetector.isInQueue(), message -> {
+            if (!shouldRelayForLocalGuild()) return false;
+            String username = currentMinecraftUsername();
+            if (username == null) return false;
+            String avatarUrl = "https://mc-heads.net/avatar/"
+                    + URLEncoder.encode(username, StandardCharsets.UTF_8).replace("+", "%20") + "/128";
+            return ConnectionManager.getInstance().sendGuildChat(
+                    username, null, message, avatarUrl, List.of(), true);
+        }, () -> NotificationAccessor.notifyPlayer(
+                "Guild chat message could not be sent."));
+    }
+
+    /** Returns whether the command should continue to Wynncraft; handled queue messages never do. */
+    static boolean allowQueueGuildCommand(
+            String command, boolean inQueue, Predicate<String> sendMessage, Runnable notifyFailure) {
+        String message = queueGuildCommandMessage(command);
+        if (!inQueue || message == null) return true;
+        if (!sendMessage.test(message)) notifyFailure.run();
+        return false;
+    }
+
+    static String queueGuildCommandMessage(String command) {
+        if (command == null || command.length() < 3 || command.charAt(0) != 'g'
+                || !Character.isWhitespace(command.charAt(1))) {
+            return null;
+        }
+        String message = command.substring(2).trim();
+        return message.isBlank() ? null : message;
     }
 
     // ── Outgoing: Wynncraft guild → backend → Discord ──
@@ -792,7 +826,7 @@ public class ChatManager {
     static MutableComponent guildSenderLine(
             ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank) {
         return RankGradientAnimation.batchRegistrations(() -> {
-            MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildPrefix(false));
+            MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildSenderPrefix());
             TextColor textColor = DiscordRankChatDecorator.inGameGuildChatTextColor();
             if (rank != null) {
                 line.append(DiscordRankChatDecorator.rankPill(rank, null, textColor, msg.username()))
