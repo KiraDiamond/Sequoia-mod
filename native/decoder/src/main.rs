@@ -20,18 +20,8 @@ const MAGIC: u32 = 0x5349_4d31;
 const DECODE_DEADLINE: Duration = Duration::from_secs(15);
 const FUEL: u64 = 10_000_000_000;
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/windows-x86_64.cwasm");
-#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/windows-aarch64.cwasm");
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/linux-x86_64.cwasm");
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/linux-aarch64.cwasm");
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/macos-x86_64.cwasm");
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const AOT: &[u8] = include_bytes!("../../wasm/macos-aarch64.cwasm");
+// Generated from the verified WASM by build-native.py, then embedded at compile time.
+const AOT: &[u8] = include_bytes!(env!("SEQIMAGES_AOT_PATH"));
 
 struct State {
     limits: StoreLimits,

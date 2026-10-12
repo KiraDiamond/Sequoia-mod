@@ -485,3 +485,6 @@ available. This does not create or verify account links on anyone's behalf.
 
 Shared client/backend wire checks and fixture maintenance are documented in
 [`docs/game-websocket-contract.md`](docs/game-websocket-contract.md).
+
+Native image decoder builds and upstream verification are documented in
+[`native/README.md`](native/README.md).

@@ -1,8 +1,8 @@
 """Build and verify one native platform on a matching runner.
 
 Outputs build/native/PLATFORM/ (shippable helper files plus validation.json) and
-build/native/PLATFORM-probes/ (test-only probes, never shipped). verify-committed.py then
-checks the committed helpers with the same probes.
+build/native/PLATFORM-probes/ (test-only probes, never shipped).
+Requires build/native-wasm/decoder.wasm from the verified source build.
 """
 import argparse, os, pathlib, platform, shutil, subprocess, sys
 
@@ -30,6 +30,8 @@ if windows:
 if host == "macos":
     env["MACOSX_DEPLOYMENT_TARGET"] = "13.0"
 manifest = str(root / "native/decoder/Cargo.toml")
+aot = root / "build/native-aot" / (args.platform + ".cwasm")
+env["SEQIMAGES_AOT_PATH"] = str(aot)
 
 
 def run(*cmd):
@@ -51,7 +53,6 @@ for directory in (out, probes):
 suffix = ".exe" if windows else ""
 exe = "seqimages-decoder" + suffix
 shutil.copy2(target_dir / exe, out / exe)
-shutil.copy2(root / "native/wasm" / (args.platform + ".cwasm"), out / "decoder.cwasm")
 if windows:
     vswhere = pathlib.Path(os.environ["ProgramFiles(x86)"]) / "Microsoft Visual Studio/Installer/vswhere.exe"
     install = subprocess.check_output(

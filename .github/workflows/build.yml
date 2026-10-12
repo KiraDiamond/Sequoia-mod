@@ -11,15 +11,29 @@ permissions:
   contents: read
 
 jobs:
+  native:
+    uses: ./.github/workflows/image-decoders.yml
+
   build:
+    needs: native
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download this run's tested native helpers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          path: .native-artifacts
+      - name: Stage native resources
+        run: python native/stage-resources.py .native-artifacts .native-resources
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
@@ -32,14 +46,25 @@ jobs:
         run: ./gradlew clean build remapJar --stacktrace
 
   windows-updater-tests:
+    needs: native
     runs-on: windows-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download this run's tested native helpers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          path: .native-artifacts
+      - name: Stage native resources
+        run: python native/stage-resources.py .native-artifacts .native-resources
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
@@ -50,7 +75,7 @@ jobs:
 
       - name: Upload Windows updater test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-test-reports
           path: |

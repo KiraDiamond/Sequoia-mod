@@ -9,17 +9,33 @@ permissions:
   contents: write
 
 jobs:
+  native:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/image-decoders.yml
+
   release:
+    needs: native
     runs-on: ubuntu-latest
     env:
       MODRINTH_PROJECT_SLUG: sequoia
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download this run's tested native helpers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          path: .native-artifacts
+      - name: Stage native resources
+        run: python native/stage-resources.py .native-artifacts .native-resources
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'

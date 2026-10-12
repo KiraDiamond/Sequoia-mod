@@ -128,3 +128,7 @@ native/decoder/target/
 # Rust binary sources, not output, despite the bin pattern above.
 !native/decoder/src/bin/
 __pycache__/
+
+# Decoder artifacts staged from the current CI run, outside build/ so clean keeps them.
+.native-artifacts/
+.native-resources/

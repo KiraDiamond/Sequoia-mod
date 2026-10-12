@@ -2,8 +2,7 @@
 
 usage: verify-native.py PLATFORM HELPER_DIR PROBE_DIR [REPORT]
 
-HELPER_DIR holds the helper (and sandbox.exe on Windows): a fresh build or the committed
-resources. PROBE_DIR holds test-only probes from the same source: sandbox-probe on Unix,
+HELPER_DIR holds the freshly built helper (and sandbox.exe on Windows). PROBE_DIR holds test-only probes from the same source: sandbox-probe on Unix,
 sandbox-probe.exe and cancellation-broker.exe on Windows.
 """
 import hashlib, json, os, pathlib, socket, struct, subprocess, sys, tempfile, time
