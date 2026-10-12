@@ -154,7 +154,8 @@ public final class DiscordRankChatDecorator {
         // not, so it is recognised by identity as well as by the suppression flag:
         // another mod may queue the message and deliver it here after
         // displayUndecorated has returned, closing the very block it opened.
-        boolean ownLine = suppressed || message == lastBridgeLine;
+        boolean ownLine = suppressed || message == lastBridgeLine
+                || RECENT_COLORED_BRIDGE_LINES.stream().anyMatch(line -> line.message() == message);
         if (!ownLine) {
             bridgeSequenceOpen = false;
         }
@@ -768,6 +769,29 @@ public final class DiscordRankChatDecorator {
 
     // ── Discord guild bridge ──
 
+    static RankPresentation guildRank(String username) {
+        return isEnabled() ? DiscordRankService.getInstance().presentationForMinecraftUsername(username) : null;
+    }
+
+    static MutableComponent guildInsignia(String username) {
+        SeqBadgeTier tier = insigniaEnabled() ? insigniaOf(username) : null;
+        return tier == null ? null : insigniaBadge(tier);
+    }
+
+    static MutableComponent guildPrefix(boolean continuation) {
+        GuildChatMarkers.Marker marker = continuation ? GuildChatMarkers.bar() : GuildChatMarkers.arrow();
+        return marker == null
+                ? Component.literal(continuation ? "│ " : "➜ ").withStyle(ChatFormatting.AQUA)
+                : Component.empty().append(Component.literal(marker.glyphs()).withStyle(marker.style()))
+                        .append(continuation ? Component.empty() : Component.literal(" "));
+    }
+
+    /** Retains guild wrapping and bypasses re-decoration without opening a Discord block. */
+    static void displayGuildLine(Component line, Runnable display) {
+        rememberColoredBridgeLine(line, guildPrefix(true));
+        displayUndecorated(line, display, false);
+    }
+
     /**
      * Rank of a bridge message sender, or {@code null} when they have none. Callers
      * use it for both the badge and the sender name colour.
@@ -791,7 +815,7 @@ public final class DiscordRankChatDecorator {
                 : SeqClient.getDiscordChatTextColorSetting().getValue());
     }
 
-    private static TextColor inGameGuildChatTextColor() {
+    static TextColor inGameGuildChatTextColor() {
         return TextColor.fromRgb(SeqClient.getInGameGuildChatTextColorSetting() == null
                 ? GUILD_CHAT_COLOR
                 : SeqClient.getInGameGuildChatTextColorSetting().getValue());

@@ -127,6 +127,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
 
     // Callbacks for new message types
     private static Consumer<DiscordChatMessage> discordChatHandler;
+    private static Consumer<GuildChatMessage> guildChatHandler;
     private static Consumer<PartyFinderUpdateMessage> partyFinderUpdateHandler;
     private static Consumer<RaidProfileUpdateMessage> raidProfileUpdateHandler;
     private static Consumer<PartyFinderInviteMessage> partyFinderInviteHandler;
@@ -1020,6 +1021,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
         String safeNickname = sanitizeNickname(nickname);
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "guild_chat");
+        msg.addProperty("should_be_displayed", false);
         if (safeReportedUsername != null) {
             msg.addProperty("username", safeReportedUsername);
         }
@@ -1033,6 +1035,26 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
             msg.add("item_previews", itemPreviewArray);
         }
         return msg;
+    }
+
+    static boolean shouldDisplayGuildChat(JsonObject json) {
+        var flag = json.get("should_be_displayed");
+        return flag != null && flag.isJsonPrimitive() && flag.getAsJsonPrimitive().isBoolean()
+                && flag.getAsBoolean();
+    }
+
+    static GuildChatMessage parseGuildChatMessage(JsonObject json) {
+        if (!shouldDisplayGuildChat(json)) return null;
+        String username = guildChatString(json, "username");
+        String message = guildChatString(json, "message");
+        if (username == null || message == null) return null;
+        return new GuildChatMessage(username, guildChatString(json, "nickname"), message);
+    }
+
+    private static String guildChatString(JsonObject json, String key) {
+        var value = json.get(key);
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()
+                ? value.getAsString() : null;
     }
 
     public boolean sendGuildAllianceUpdate(String action, String guildName) {
@@ -1944,6 +1966,17 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
                     Minecraft.getInstance().execute(() -> GuildStorageTracker.getInstance().applyRemoteSnapshot(
                             emeraldCurrent, emeraldMax, aspectCurrent, aspectMax));
                 }
+                case "guild_chat" -> {
+                    if (!shouldDisplayGuildChat(json)) return;
+                    GuildChatMessage msg = parseGuildChatMessage(json);
+                    if (msg == null) {
+                        SeqClient.LOGGER.warn("[WebSocket] Ignoring malformed displayable guild_chat");
+                    } else if (guildChatHandler != null) {
+                        guildChatHandler.accept(msg);
+                    } else {
+                        SeqClient.LOGGER.warn("[WebSocket] Received guild_chat but handler is not registered");
+                    }
+                }
                 case "discord_chat" -> {
                     if (discordChatHandler != null) {
                         String username = json.get("username").getAsString();
@@ -2177,6 +2210,10 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
     }
 
     // ── Handler registration ──
+
+    public static void onGuildChat(Consumer<GuildChatMessage> handler) {
+        guildChatHandler = handler;
+    }
 
     public static void onDiscordChat(Consumer<DiscordChatMessage> handler) {
         SeqClient.LOGGER.info("[WebSocket] Registering discord_chat handler present={}", handler != null);
@@ -2756,6 +2793,8 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
     }
 
     // ── Message records ──
+
+    public record GuildChatMessage(String username, String nickname, String message) {}
 
     /**
      * A message relayed from the Discord guild bridge.

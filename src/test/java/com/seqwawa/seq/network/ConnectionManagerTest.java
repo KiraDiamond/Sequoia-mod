@@ -19,6 +19,42 @@ import org.junit.jupiter.api.Test;
 class ConnectionManagerTest {
 
     @Test
+    void outgoingGuildChatRequestsNoDisplayAndPreservesFields() {
+        var payload = ConnectionManager.buildGuildChatPayload("Sender", "Nickname", "hello", "https://example.com", List.of());
+        assertTrue(payload.getAsJsonPrimitive("should_be_displayed").isBoolean());
+        assertFalse(payload.get("should_be_displayed").getAsBoolean());
+        assertEquals("Sender", payload.get("username").getAsString());
+        assertEquals("Nickname", payload.get("nickname").getAsString());
+        assertEquals("hello", payload.get("message").getAsString());
+        assertEquals("https://example.com", payload.get("avatar_url").getAsString());
+    }
+
+    @Test
+    void guildChatOnlyDispatchesExplicitTrueAndValidStrings() {
+        var received = new java.util.ArrayList<ConnectionManager.GuildChatMessage>();
+        ConnectionManager.onGuildChat(received::add);
+        try {
+            for (String flag : List.of("false", "null", "\"true\"", "1", "{}", "[]")) {
+                ConnectionManager.getInstance().onMessage("{\"type\":\"guild_chat\",\"should_be_displayed\":" + flag + "}");
+            }
+            ConnectionManager.getInstance().onMessage("{\"type\":\"guild_chat\"}");
+            for (String fields : List.of("", ",\"username\":true,\"message\":\"hello\"", ",\"username\":\"Sender\",\"message\":null")) {
+                ConnectionManager.getInstance().onMessage("{\"type\":\"guild_chat\",\"should_be_displayed\":true" + fields + "}");
+            }
+            assertTrue(received.isEmpty());
+            String echo = "{\"type\":\"guild_chat\",\"should_be_displayed\":true,\"username\":\"Sender\",\"message\":\"hello\"}";
+            ConnectionManager.getInstance().onMessage(echo);
+            ConnectionManager.getInstance().onMessage(echo);
+            ConnectionManager.getInstance().onMessage("{\"type\":\"guild_chat\",\"should_be_displayed\":true,\"username\":\"Other\",\"nickname\":\"Nick\",\"message\":\"hi\"}");
+            assertEquals(List.of(new ConnectionManager.GuildChatMessage("Sender", null, "hello"),
+                    new ConnectionManager.GuildChatMessage("Sender", null, "hello"),
+                    new ConnectionManager.GuildChatMessage("Other", "Nick", "hi")), received);
+        } finally {
+            ConnectionManager.onGuildChat(null);
+        }
+    }
+
+    @Test
     void itemPreviewPayloadIncludesV3Sections() {
         var sections = List.of(
                 new ChatItemPreview.Section("Mount Stats", List.of("Speed: 12/20", "Jump Height: 4/8")),

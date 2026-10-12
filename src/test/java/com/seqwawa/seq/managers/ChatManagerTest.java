@@ -28,6 +28,84 @@ import com.seqwawa.seq.integrations.WynntilsGuildRankAccess;
 class ChatManagerTest {
 
     @Test
+    void guildStylingIsIndependentOfDiscordSettingsAndHonorsGuildDecorationGate() {
+        var previousRanks = SeqClient.showDiscordRanksSetting;
+        var previousChat = SeqClient.showDiscordChatSetting;
+        var previousBridge = SeqClient.colorDiscordBridgeSetting;
+        try {
+            SeqClient.showDiscordRanksSetting = new Setting.BooleanSetting("show_discord_ranks", "chat", false);
+            SeqClient.showDiscordChatSetting = new Setting.BooleanSetting("show_discord_chat", "chat", false);
+            SeqClient.colorDiscordBridgeSetting = new Setting.BooleanSetting("color_discord_bridge", "chat", false);
+            assertNull(DiscordRankChatDecorator.guildRank("RealName"));
+            assertNull(DiscordRankChatDecorator.guildInsignia("RealName"));
+            var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("RealName", null, "hello"), "hello", null);
+            assertTrue(line.getString().contains("RealName: hello"));
+            assertFragmentColor(line, "hello", 0x55FFFF);
+        } finally {
+            SeqClient.showDiscordRanksSetting = previousRanks;
+            SeqClient.showDiscordChatSetting = previousChat;
+            SeqClient.colorDiscordBridgeSetting = previousBridge;
+        }
+    }
+
+    @Test
+    void guildPrefixesPreserveCapturedFontAndStyle() {
+        GuildChatMarkers.reset();
+        try {
+            var style = Style.EMPTY.withFont(new net.minecraft.network.chat.FontDescription.Resource(
+                    net.minecraft.resources.Identifier.fromNamespaceAndPath("test", "guild")))
+                    .withColor(ChatFormatting.AQUA);
+            GuildChatMarkers.observe(ComponentTextEditor.flatten(Component.literal("abcd").withStyle(style)), 4);
+            GuildChatMarkers.observe(ComponentTextEditor.flatten(Component.literal("x").withStyle(style)), 1);
+            assertEquals("abcd ", DiscordRankChatDecorator.guildPrefix(false).getString());
+            assertEquals("x", DiscordRankChatDecorator.guildPrefix(true).getString());
+            assertEquals(style, ComponentTextEditor.flatten(DiscordRankChatDecorator.guildPrefix(false)).getFirst().style());
+        } finally {
+            GuildChatMarkers.reset();
+        }
+    }
+
+    @Test
+    void forwardedGuildChatUsesGuildColorAndRealNicknameIdentity() {
+        var previous = SeqClient.inGameGuildChatTextColorSetting;
+        try {
+            SeqClient.inGameGuildChatTextColorSetting = new Setting.ColorSetting("in_game_guild_chat_text_color", "chat", 0xA1B2C3);
+            var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("RealName", "Nickname", "hello"), "hello", null);
+            assertTrue(line.getString().contains("Nickname: hello"));
+            assertTrue(WynnPillGlyphs.findPills(line.getString()).isEmpty());
+            var identity = ComponentTextEditor.flatten(line).stream().filter(f -> f.text().equals("Nickname")).findFirst().orElseThrow().style();
+            assertEquals("RealName", identity.getInsertion());
+            assertTrue(((HoverEvent.ShowText) identity.getHoverEvent()).value().getString().contains("RealName"));
+            assertFragmentColor(line, "hello", 0xA1B2C3);
+            assertFragmentColor(ChatManager.guildContinuationLine("continued"), "continued", 0xA1B2C3);
+        } finally {
+            SeqClient.inGameGuildChatTextColorSetting = previous;
+        }
+    }
+
+    @Test
+    void forwardedGuildChatUsesRankAndBlankNicknameFallsBackToUsername() {
+        RankPresentation rank = new RankPresentation(new DiscordRank("rank.sapling", "Sapling", 88), ColorRamp.of(0x4CB4FA));
+        var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("RealName", " ", "hello"), "hello", rank);
+        assertEquals("sapling", WynnPillGlyphs.findPills(line.getString()).getFirst().label());
+        assertTrue(line.getString().contains("RealName: hello"));
+        assertTrue(ComponentTextEditor.flatten(line).stream().anyMatch(f -> "RealName".equals(f.style().getInsertion())));
+    }
+
+    @Test
+    void forwardedGuildLineKeepsWrappingPrefixWithoutDiscordSequenceOrRedecoration() {
+        var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("RealName", null, "hello"), "hello", null);
+        DiscordRankChatDecorator.displayGuildLine(line, () -> {
+            assertTrue(line == DiscordRankChatDecorator.decorateGuildChat(line));
+        });
+        assertEquals(DiscordRankChatDecorator.guildPrefix(true).getString(),
+                DiscordRankChatDecorator.bridgeContinuationPrefixFor(line).getString());
+        var expected = DiscordRankChatDecorator.bridgePrefix().getString();
+        DiscordRankChatDecorator.displayUndecorated(Component.literal("neutral"), () -> {}, false);
+        assertEquals(expected, DiscordRankChatDecorator.bridgePrefix().getString());
+    }
+
+    @Test
     void parseGuildMessageHandlesPacketGlyphsAndNicknameRealNameSplit() {
         Component message = Component.empty()
                 .append(Component.literal("󏿼󐀆 "))

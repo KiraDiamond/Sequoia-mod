@@ -44,7 +44,7 @@ import static com.seqwawa.seq.client.SeqClient.mc;
  * Outgoing: intercepts Wynncraft guild chat, resolves nicknames to real
  * usernames
  * via component insertion tags, and sends to backend.
- * Incoming: listens for Discord chat WS messages, displays in MC chat.
+ * Incoming: displays Discord and forwarded guild chat WS messages in MC chat.
  */
 public class ChatManager {
 
@@ -758,9 +758,21 @@ public class ChatManager {
         return insertion;
     }
 
-    // ── Incoming: Discord → backend → WS → MC chat ──
+    // ── Incoming: backend → WS → MC chat ──
 
     private void registerIncomingHook() {
+        ConnectionManager.onGuildChat(msg -> mc.execute(() -> {
+            if (mc.player == null) return;
+            // Client-only display bypasses the packet hook that relays server guild chat.
+            RankPresentation rank = DiscordRankChatDecorator.guildRank(msg.username());
+            List<String> lines = splitMessageLines(msg.message());
+            for (int index = 0; index < lines.size(); index++) {
+                MutableComponent line = index == 0
+                        ? guildSenderLine(msg, lines.get(index), rank)
+                        : guildContinuationLine(lines.get(index));
+                DiscordRankChatDecorator.displayGuildLine(line, () -> mc.player.displayClientMessage(line, false));
+            }
+        }));
         ConnectionManager.onDiscordChat(msg -> {
             if (!SeqClient.getShowDiscordChatSetting().getValue())
                 return;
@@ -775,6 +787,41 @@ public class ChatManager {
                 }
             });
         });
+    }
+
+    static MutableComponent guildSenderLine(
+            ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank) {
+        return RankGradientAnimation.batchRegistrations(() -> {
+            MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildPrefix(false));
+            TextColor textColor = DiscordRankChatDecorator.inGameGuildChatTextColor();
+            if (rank != null) {
+                line.append(DiscordRankChatDecorator.rankPill(rank, null, textColor, msg.username()))
+                        .append(Component.literal(" "));
+            }
+            boolean hasNickname = msg.nickname() != null && !msg.nickname().isBlank();
+            String name = hasNickname ? msg.nickname() : msg.username();
+            Style identity = Style.EMPTY.withColor(ChatFormatting.DARK_AQUA)
+                    .withInsertion(msg.username()).withItalic(hasNickname);
+            if (!name.equals(msg.username())) {
+                identity = identity.withHoverEvent(new HoverEvent.ShowText(
+                        Component.empty()
+                                .append(Component.literal(name + "'s ").withStyle(ChatFormatting.WHITE))
+                                .append(Component.literal("real name is ").withStyle(ChatFormatting.GRAY))
+                                .append(Component.literal(msg.username()).withStyle(ChatFormatting.WHITE))));
+            }
+            line.append(rank == null ? Component.literal(name).withStyle(identity)
+                    : DiscordRankChatDecorator.colouredName(name, rank, identity));
+            MutableComponent insignia = DiscordRankChatDecorator.guildInsignia(msg.username());
+            if (insignia != null) line.append(insignia);
+            return line.append(Component.literal(": ").withStyle(ChatFormatting.DARK_AQUA))
+                    .append(Component.literal(text).withStyle(style -> style.withColor(textColor)));
+        });
+    }
+
+    static MutableComponent guildContinuationLine(String text) {
+        return Component.empty().append(DiscordRankChatDecorator.guildPrefix(true))
+                .append(Component.literal(text).withStyle(style ->
+                        style.withColor(DiscordRankChatDecorator.inGameGuildChatTextColor())));
     }
 
     /**
