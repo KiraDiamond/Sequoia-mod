@@ -122,7 +122,7 @@ final class IsolatedDecoder {
         }
     }
 
-    /** One helper process. Closing it always terminates and reaps the process. */
+    /** One helper process. Closing it always terminates and reaps it and what it started. */
     static final class Session implements AutoCloseable {
         private final Process process;
         private final Path scratch;
@@ -132,6 +132,8 @@ final class IsolatedDecoder {
         private final Thread diagnosticsReader;
         private final AtomicBoolean timedOut = new AtomicBoolean();
         private final AtomicBoolean aborting = new AtomicBoolean();
+        // Processes an abort killed without waiting; close() reaps them.
+        private volatile List<ProcessHandle> killed;
         private MediaCancellation.Registration abortRegistration;
         private boolean used;
         private boolean closed;
@@ -229,27 +231,31 @@ final class IsolatedDecoder {
         /** Requests cancellation without blocking the caller, escalating to a hard kill. */
         private void abort() {
             if (!process.isAlive() || !aborting.compareAndSet(false, true)) return;
-            if (windows) {
-                requestBrokerCancel();
+            if (windows && requestBrokerCancel()) {
                 WATCHDOG.schedule(
                         () -> {
-                            if (process.isAlive()) process.destroyForcibly();
+                            if (process.isAlive()) killed = kill(process);
                         },
                         BROKER_CLEANUP_MILLIS,
                         TimeUnit.MILLISECONDS);
+            } else if (windows) {
+                killed = kill(process);
             } else {
+                // A Unix helper starts no processes; skip the process-tree scan on this thread.
                 process.destroyForcibly();
             }
         }
 
-        private void requestBrokerCancel() {
+        /** @return false if the request could not be made and the helper must be killed */
+        private boolean requestBrokerCancel() {
             try {
                 Files.createFile(scratch.resolve(CANCEL_FILE));
             } catch (FileAlreadyExistsException alreadyRequested) {
                 // A timeout and a cancellation can both ask; one request is enough.
             } catch (IOException unavailable) {
-                process.destroyForcibly();
+                return false;
             }
+            return true;
         }
 
         /**
@@ -258,12 +264,18 @@ final class IsolatedDecoder {
          * the next broker removes the leftover state from its lease record.
          */
         private void terminate() throws IOException {
-            if (!process.isAlive()) return;
-            if (windows) {
-                requestBrokerCancel();
-                if (waitUninterruptibly(process, BROKER_CLEANUP_MILLIS)) return;
+            boolean exited =
+                    !process.isAlive()
+                            || windows
+                                    && requestBrokerCancel()
+                                    && waitUninterruptibly(process, BROKER_CLEANUP_MILLIS);
+            if (!exited) {
+                killAndReap(process);
+                return;
             }
-            killAndReap(process);
+            // An abort may have killed it without waiting for what it started.
+            var abortKilled = killed;
+            if (abortKilled != null) reap(process, abortKilled);
         }
 
         private String diagnosticText() {
@@ -364,14 +376,26 @@ final class IsolatedDecoder {
      * AppContainer decoder ends through its job object only after the broker itself.
      */
     private static void killAndReap(Process process) throws IOException {
+        reap(process, kill(process));
+    }
+
+    /**
+     * Kills a worker and every process it started without waiting.
+     *
+     * @return the started processes, for {@link #reap}
+     */
+    private static List<ProcessHandle> kill(Process process) {
         List<ProcessHandle> started = process.descendants().toList();
         process.destroyForcibly();
+        started.forEach(ProcessHandle::destroyForcibly);
+        return started;
+    }
+
+    /** Waits, within the reap bound, for a killed worker and the processes it started. */
+    private static void reap(Process process, List<ProcessHandle> started) throws IOException {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(REAP_MILLIS);
         boolean exited = waitUninterruptibly(process.onExit(), deadline);
-        for (var child : started) {
-            child.destroyForcibly();
-            exited &= waitUninterruptibly(child.onExit(), deadline);
-        }
+        for (var child : started) exited &= waitUninterruptibly(child.onExit(), deadline);
         if (!exited) throw new IOException("Image decoder did not exit after termination");
     }
 
