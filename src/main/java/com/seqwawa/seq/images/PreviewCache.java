@@ -222,7 +222,10 @@ final class PreviewCache {
             } catch (Exception error) {
                 failure = error;
             }
+            // Register before checking cancellation so a concurrent clear() cannot miss the lease.
+            postedLeases.add(lease);
             if (cancellation.isCancelled()) {
+                postedLeases.remove(lease);
                 lease.close();
                 return;
             }
@@ -230,7 +233,6 @@ final class PreviewCache {
             var error = failure;
             // A posted result stays charged until the render thread installs it, or until the
             // next clear() if the client drops it while disconnecting.
-            postedLeases.add(lease);
             if (!post(() -> finish(preview, cancellation, loaded, error, lease))) {
                 postedLeases.remove(lease);
                 lease.close();

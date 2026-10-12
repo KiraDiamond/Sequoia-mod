@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.AbstractSet;
+import java.util.Iterator;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -121,6 +124,65 @@ class PreviewCancellationTest {
             assertTrue(aborted.await(2, TimeUnit.SECONDS), "Held resources were not aborted");
             harness.workers().submit(() -> {}).get(2, TimeUnit.SECONDS);
             assertEquals(0, harness.pendingMain(), "A cancelled load must not post a result");
+        }
+    }
+
+    @Test
+    void clearingDuringLeaseRegistrationReturnsTheInFlightBudget() throws Exception {
+        var registering = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            lease.reserve(1024);
+            return null;
+        })) {
+            var field = PreviewCache.class.getDeclaredField("postedLeases");
+            field.setAccessible(true);
+            Set<ByteBudget.Lease> leases = ConcurrentHashMap.newKeySet();
+            field.set(harness.cache(), new AbstractSet<ByteBudget.Lease>() {
+                @Override
+                public boolean add(ByteBudget.Lease lease) {
+                    registering.countDown();
+                    // Hold registration across clear(), including its worker interruption.
+                    boolean interrupted = false;
+                    try {
+                        while (true) {
+                            try {
+                                assertTrue(resume.await(5, TimeUnit.SECONDS));
+                                return leases.add(lease);
+                            } catch (InterruptedException ignored) {
+                                interrupted = true;
+                            }
+                        }
+                    } finally {
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
+                }
+
+                @Override
+                public Iterator<ByteBudget.Lease> iterator() {
+                    return leases.iterator();
+                }
+
+                @Override
+                public int size() {
+                    return leases.size();
+                }
+            });
+            harness.cache().get(link("registering"));
+            assertTrue(registering.await(2, TimeUnit.SECONDS));
+            assertEquals(1024, harness.cache().inFlightBytes());
+            try {
+                harness.cache().clear();
+            } finally {
+                resume.countDown();
+            }
+            harness.workers().shutdown();
+            assertTrue(harness.workers().awaitTermination(5, TimeUnit.SECONDS));
+            harness.dropMain();
+            assertEquals(0, harness.cache().inFlightBytes(), "Disconnect must release late leases");
+            assertTrue(leases.isEmpty(), "Cancelled leases must not remain registered");
+        } finally {
+            resume.countDown();
         }
     }
 }
