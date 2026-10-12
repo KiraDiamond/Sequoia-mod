@@ -32,7 +32,10 @@ class DecoderSessionTest {
     private static void assertStopped(Process process, List<ProcessHandle> started)
             throws Exception {
         assertTrue(process.waitFor(10, TimeUnit.SECONDS), "cancelling did not stop the helper");
-        for (var child : started) child.onExit().get(10, TimeUnit.SECONDS);
+        for (var child : started)
+            assertDoesNotThrow(
+                    () -> child.onExit().get(10, TimeUnit.SECONDS),
+                    "cancelling left the decoder running");
     }
 
     @Test

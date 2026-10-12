@@ -132,8 +132,9 @@ final class IsolatedDecoder {
         private final Thread diagnosticsReader;
         private final AtomicBoolean timedOut = new AtomicBoolean();
         private final AtomicBoolean aborting = new AtomicBoolean();
-        // Processes an abort killed without waiting; close() reaps them.
-        private volatile List<ProcessHandle> killed;
+        // What the helper had started when an abort killed it; null if no abort killed it.
+        // close() reaps these along with the helper.
+        private volatile List<ProcessHandle> abortKilledDescendants;
         private MediaCancellation.Registration abortRegistration;
         private boolean used;
         private boolean closed;
@@ -231,19 +232,29 @@ final class IsolatedDecoder {
         /** Requests cancellation without blocking the caller, escalating to a hard kill. */
         private void abort() {
             if (!process.isAlive() || !aborting.compareAndSet(false, true)) return;
-            if (windows && requestBrokerCancel()) {
-                WATCHDOG.schedule(
-                        () -> {
-                            if (process.isAlive()) killed = kill(process);
-                        },
-                        BROKER_CLEANUP_MILLIS,
-                        TimeUnit.MILLISECONDS);
-            } else if (windows) {
-                killed = kill(process);
-            } else {
+            if (!windows) {
                 // A Unix helper starts no processes; skip the process-tree scan on this thread.
                 process.destroyForcibly();
+                return;
             }
+            if (!requestBrokerCancel()) {
+                killForAbort();
+                return;
+            }
+            WATCHDOG.schedule(
+                    () -> {
+                        if (process.isAlive()) killForAbort();
+                    },
+                    BROKER_CLEANUP_MILLIS,
+                    TimeUnit.MILLISECONDS);
+        }
+
+        /** Kills the helper and what it started without waiting; close() reaps them. */
+        private void killForAbort() {
+            List<ProcessHandle> started = process.descendants().toList();
+            // Published before the kill, so terminate() never sees a dead helper without it.
+            abortKilledDescendants = started;
+            destroy(process, started);
         }
 
         /** @return false if the request could not be made and the helper must be killed */
@@ -264,18 +275,22 @@ final class IsolatedDecoder {
          * the next broker removes the leftover state from its lease record.
          */
         private void terminate() throws IOException {
-            boolean exited =
-                    !process.isAlive()
-                            || windows
-                                    && requestBrokerCancel()
-                                    && waitUninterruptibly(process, BROKER_CLEANUP_MILLIS);
-            if (!exited) {
-                killAndReap(process);
-                return;
+            if (process.isAlive()) {
+                boolean exitedAfterCancel = windows && cancelAndWait();
+                if (!exitedAfterCancel) {
+                    killAndReap(process);
+                    return;
+                }
             }
             // An abort may have killed it without waiting for what it started.
-            var abortKilled = killed;
-            if (abortKilled != null) reap(process, abortKilled);
+            var started = abortKilledDescendants;
+            if (started != null) reap(process, started);
+        }
+
+        /** @return true if the broker exited by itself after a cancel request */
+        private boolean cancelAndWait() {
+            if (!requestBrokerCancel()) return false;
+            return waitUninterruptibly(process, BROKER_CLEANUP_MILLIS);
         }
 
         private String diagnosticText() {
@@ -386,9 +401,13 @@ final class IsolatedDecoder {
      */
     private static List<ProcessHandle> kill(Process process) {
         List<ProcessHandle> started = process.descendants().toList();
+        destroy(process, started);
+        return started;
+    }
+
+    private static void destroy(Process process, List<ProcessHandle> started) {
         process.destroyForcibly();
         started.forEach(ProcessHandle::destroyForcibly);
-        return started;
     }
 
     /** Waits, within the reap bound, for a killed worker and the processes it started. */
