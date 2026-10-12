@@ -238,7 +238,8 @@ final class IsolatedDecoder {
                 return;
             }
             if (!requestBrokerCancel()) {
-                killForAbort();
+                // The kill scans the process tree; keep that off the cancelling thread.
+                WATCHDOG.execute(this::killForAbort);
                 return;
             }
             WATCHDOG.schedule(
@@ -251,7 +252,7 @@ final class IsolatedDecoder {
 
         /** Kills the helper and what it started without waiting; close() reaps them. */
         private void killForAbort() {
-            List<ProcessHandle> started = process.descendants().toList();
+            List<ProcessHandle> started = descendants(process);
             // Published before the kill, so terminate() never sees a dead helper without it.
             abortKilledDescendants = started;
             destroy(process, started);
@@ -400,9 +401,19 @@ final class IsolatedDecoder {
      * @return the started processes, for {@link #reap}
      */
     private static List<ProcessHandle> kill(Process process) {
-        List<ProcessHandle> started = process.descendants().toList();
+        List<ProcessHandle> started = descendants(process);
         destroy(process, started);
         return started;
+    }
+
+    /** Processes the worker started; empty if the OS cannot list them, so a kill still runs. */
+    private static List<ProcessHandle> descendants(Process process) {
+        try {
+            return process.descendants().toList();
+        } catch (RuntimeException unavailable) {
+            // A Windows decoder still ends with its broker through the job object.
+            return List.of();
+        }
     }
 
     private static void destroy(Process process, List<ProcessHandle> started) {
