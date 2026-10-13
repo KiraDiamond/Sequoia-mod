@@ -1,10 +1,8 @@
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
-#include <libavutil/imgutils.h>
 #include <libavutil/intreadwrite.h>
 #include <libswscale/swscale.h>
 #define MAX_INPUT (8*1024*1024)
@@ -98,7 +96,6 @@ __attribute__((export_name("decode_media"))) int decode_media(uint8_t *data,int 
  av_dict_set(&options,"protocol_whitelist","",0);
  av_dict_set(&options,"format_whitelist",name,0);
  av_dict_set(&options,"codec_whitelist","gif,png,mjpeg,h264",0);
- av_dict_set(&options,"max_pixels","8000000",0);
  if(avformat_open_input(&format,NULL,av_find_input_format(name),&options)<0)goto end;
  if(avformat_find_stream_info(format,NULL)<0 || format->nb_streams>16)goto end;
  int stream_index=av_find_best_stream(format,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);

@@ -4,10 +4,6 @@
 //! the pipes it inherited, but cannot open files, create sockets or start processes. Windows
 //! applies the equivalent restrictions from outside, through an AppContainer broker.
 
-/// CPU seconds the decoder may consume before the kernel stops it.
-#[cfg(unix)]
-const CPU_SECONDS: u64 = 20;
-
 #[cfg(unix)]
 fn limit_resources() -> std::io::Result<()> {
     use rustix::process::{Resource, Rlimit, setrlimit};
@@ -15,19 +11,15 @@ fn limit_resources() -> std::io::Result<()> {
         current: Some(seconds),
         maximum: Some(seconds),
     };
-    setrlimit(Resource::Cpu, limit(CPU_SECONDS))?;
+    setrlimit(Resource::Cpu, limit(20))?;
     // No file may grow and no core dump may be written.
     setrlimit(Resource::Fsize, limit(0))?;
     setrlimit(Resource::Core, limit(0))?;
     Ok(())
 }
 
-/// Applies resource limits and a seccomp allowlist to every thread of the process.
-///
-/// # Errors
-///
-/// Returns an error if the kernel refuses a limit or the filter; the caller must then exit
-/// without reading media.
+/// Applies resource limits and a seccomp allowlist to every thread of the process. On error the
+/// caller must exit without reading media.
 #[cfg(target_os = "linux")]
 pub fn restrict() -> std::io::Result<()> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
@@ -87,10 +79,6 @@ pub fn restrict() -> std::io::Result<()> {
 }
 
 /// Applies resource limits and a deny-by-default Seatbelt profile.
-///
-/// # Errors
-///
-/// Returns an error if a limit or the profile cannot be applied.
 #[cfg(target_os = "macos")]
 pub fn restrict() -> std::io::Result<()> {
     use std::ffi::{CStr, c_char, c_int};
@@ -124,10 +112,6 @@ pub fn restrict() -> std::io::Result<()> {
 }
 
 /// Windows confinement is applied by the AppContainer broker that starts this process.
-///
-/// # Errors
-///
-/// Never fails.
 #[cfg(target_os = "windows")]
 pub fn restrict() -> std::io::Result<()> {
     Ok(())

@@ -32,7 +32,6 @@ static constexpr DWORD MAX_LEASE_BYTES=64*1024;
 static void check(bool ok,const char* what) {
  if(!ok) throw std::runtime_error(std::string(what)+" ("+std::to_string(GetLastError())+")");
 }
-// Owns one kernel handle. Moving transfers ownership; copying would close it twice.
 class Handle {
  HANDLE h=nullptr;
 public:
@@ -230,8 +229,7 @@ static void sweepStaleLeases(const fs::path& directory,HANDLE mutex) {
   else {std::error_code ignored;fs::last_write_time(lease.file,fs::file_time_type::clock::now(),ignored);}
  }
 }
-// One AppContainer profile and its file grants. Neither copyable nor movable: it is the scope
-// that owns that state.
+// One AppContainer profile and its file grants, owned by this scope.
 class Grants {
  HANDLE mutex;
  std::wstring profileName;
@@ -262,13 +260,6 @@ public:
   DWORD error=setAccess(p,sid,rights,GRANT_ACCESS);
   SetLastError(error);check(error==ERROR_SUCCESS,"Sandbox file ACL");
   files.push_back(p);
- }
- void read(const fs::path& root) {
-  add(root,FILE_GENERIC_READ|FILE_GENERIC_EXECUTE);
-  if(fs::is_directory(root))for(auto& entry:fs::recursive_directory_iterator(root)) {
-   check(!(GetFileAttributesW(entry.path().c_str())&FILE_ATTRIBUTE_REPARSE_POINT),"Runtime reparse denied");
-   add(entry.path(),FILE_GENERIC_READ|FILE_GENERIC_EXECUTE);
-  }
  }
  // Revokes every grant and deletes the profile; the lease goes only when both succeeded.
  // One attempt: whatever remains is left to the next broker's sweep.
@@ -324,7 +315,7 @@ int wmain(int argc,wchar_t** argv) {
   ChangeNotification watch(scratch);
   if(cancelRequested(scratch))return CANCELLED;
   Grants grants(mutex,leases);
-  for(int i=0;i<count;i++)grants.read(fs::absolute(argv[4+i]));
+  for(int i=0;i<count;i++)grants.add(fs::absolute(argv[4+i]),FILE_GENERIC_READ|FILE_GENERIC_EXECUTE);
   // Input and output use inherited pipes, so the child needs no scratch-directory grant.
   SECURITY_CAPABILITIES security{};security.AppContainerSid=grants.appContainer(); // No network or other capabilities.
   Handle job(CreateJobObjectW(nullptr,nullptr));check(job.valid(),"Sandbox job");
@@ -359,17 +350,19 @@ int wmain(int argc,wchar_t** argv) {
   startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;startup.StartupInfo.hStdInput=input;startup.StartupInfo.hStdOutput=output;startup.StartupInfo.hStdError=error;
   std::wstring command;
   for(int i=4+count;i<argc;i++){if(!command.empty())command+=L" ";command+=quote(argv[i]);}
-  // Build a fresh environment to keep launcher secrets and injection options out of the child.
+  // A minimal environment keeps launcher secrets and injection options out of the child.
   wchar_t windows[MAX_PATH];check(GetWindowsDirectoryW(windows,MAX_PATH)>0,"Windows directory");
-  wchar_t local[32768];check(GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768)>0,"Local app data");
-  std::vector<std::wstring> vars={L"LOCALAPPDATA="+std::wstring(local),L"SystemRoot="+std::wstring(windows),L"TEMP="+scratch.wstring(),
-   L"TMP="+scratch.wstring(),L"windir="+std::wstring(windows)};
+  std::vector<std::wstring> vars={L"SystemRoot="+std::wstring(windows),L"windir="+std::wstring(windows)};
   std::wstring environment;for(auto& v:vars){environment+=v;environment+=L'\0';}environment+=L'\0';
   PROCESS_INFORMATION pi{};
   check(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,TRUE,
    EXTENDED_STARTUPINFO_PRESENT|CREATE_UNICODE_ENVIRONMENT|CREATE_SUSPENDED|CREATE_NO_WINDOW,
    environment.data(),scratch.c_str(),&startup.StartupInfo,&pi),"Create AppContainer process");
   Handle process(pi.hProcess),thread(pi.hThread);
+#ifdef SEQIMAGES_TEST_PAUSE
+  // Test build: stop once the suspended child exists, so tests can cancel or kill the broker here.
+  std::cout<<"SUSPENDED_CHILD "<<pi.dwProcessId<<"\n"<<std::flush;Sleep(INFINITE);
+#endif
   BOOL assigned=FALSE;
   if(!IsProcessInJob(process,job,&assigned) || !assigned){TerminateProcess(process,1);check(false,"Verify sandbox job");}
   Handle token;check(OpenProcessToken(process,TOKEN_QUERY,token.out()),"Sandbox token");

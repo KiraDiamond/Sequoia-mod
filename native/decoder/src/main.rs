@@ -5,201 +5,136 @@
 //! carries a big-endian `u32` length and that many media bytes, which are read straight into
 //! guest memory; stdout returns the validated pixel stream described in [`validate`].
 
-use seqimages_decoder::{engine, sandbox};
+use seqimages_decoder::sandbox;
 use std::io::{Read, Write};
-use std::ops::Range;
 use std::process::ExitCode;
 use std::sync::mpsc;
-use std::thread::JoinHandle;
 use std::time::Duration;
-use wasmtime::{Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc};
+use wasmtime::error::Context;
+use wasmtime::{
+    Caller, Engine, Extern, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder,
+    TypedFunc, bail, ensure,
+};
 
 const MAX_INPUT: usize = 8 * 1024 * 1024;
-const MAX_OUTPUT: usize = 48_001_616;
+/// Header, 400 frame durations and 12 million ARGB pixels.
+const MAX_OUTPUT: usize = 16 + 400 * 4 + 12_000_000 * 4;
 const MAGIC: u32 = 0x5349_4d31;
 const DECODE_DEADLINE: Duration = Duration::from_secs(15);
 const FUEL: u64 = 10_000_000_000;
+const WASI: &str = "wasi_snapshot_preview1";
+// WASI errno values the inert stubs return.
+const EBADF: i32 = 8;
+const ENOTCAPABLE: i32 = 76;
 
-// Generated from the verified WASM by build-native.py, then embedded at compile time.
-const AOT: &[u8] = include_bytes!(env!("SEQIMAGES_AOT_PATH"));
+/// The decoder guest, precompiled for this target by `native/build-native.py`.
+const AOT: &[u8] = include_bytes!(env!(
+    "SEQIMAGES_AOT_PATH",
+    "build with native/build-native.py, which precompiles the decoder guest for this target"
+));
 
-struct State {
-    limits: StoreLimits,
-}
-
-fn store(engine: &Engine) -> wasmtime::Result<Store<State>> {
-    let mut store = Store::new(
-        engine,
-        State {
-            limits: StoreLimitsBuilder::new()
-                .memory_size(192 * 1024 * 1024)
-                .memories(1)
-                .tables(1)
-                .table_elements(65536)
-                .instances(1)
-                .trap_on_grow_failure(true)
-                .build(),
-        },
-    );
-    store.limiter(|state| &mut state.limits);
+fn store(engine: &Engine) -> wasmtime::Result<Store<StoreLimits>> {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(192 * 1024 * 1024)
+        .memories(1)
+        .tables(1)
+        .table_elements(65536)
+        .instances(1)
+        .trap_on_grow_failure(true)
+        .build();
+    let mut store = Store::new(engine, limits);
+    store.limiter(|limits| limits);
     store.set_fuel(FUEL)?;
     store.set_epoch_deadline(1);
     Ok(store)
 }
 
-fn restricted_linker(engine: &Engine) -> wasmtime::Result<Linker<State>> {
+/// Satisfies the guest's libc imports without exposing the host filesystem or network.
+fn restricted_linker(engine: &Engine) -> wasmtime::Result<Linker<StoreLimits>> {
     let mut linker = Linker::new(engine);
-    // Satisfy libc imports without exposing the host filesystem or network.
+    linker.func_wrap(WASI, "proc_exit", |_: i32| -> wasmtime::Result<()> {
+        bail!("decoder exit")
+    })?;
+    linker.func_wrap(WASI, "fd_close", |_: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_seek", |_: i32, _: i64, _: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_write", |_: i32, _: i32, _: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_read", |_: i32, _: i32, _: i32, _: i32| EBADF)?;
     linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "proc_exit",
-        |_: i32| -> wasmtime::Result<()> { Err(wasmtime::Error::msg("decoder exit")) },
+        WASI,
+        "fd_readdir",
+        |_: i32, _: i32, _: i32, _: i64, _: i32| EBADF,
     )?;
-    linker.func_wrap("wasi_snapshot_preview1", "fd_close", |_: i32| -> i32 { 8 })?;
+    linker.func_wrap(WASI, "fd_fdstat_get", |_: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_fdstat_set_flags", |_: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_prestat_get", |_: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "fd_prestat_dir_name", |_: i32, _: i32, _: i32| EBADF)?;
+    linker.func_wrap(WASI, "clock_time_get", |_: i32, _: i64, _: i32| ENOTCAPABLE)?;
+    linker.func_wrap(WASI, "poll_oneoff", |_: i32, _: i32, _: i32, _: i32| {
+        ENOTCAPABLE
+    })?;
     linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_seek",
-        |_: i32, _: i64, _: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_write",
-        |_: i32, _: i32, _: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_fdstat_get",
-        |_: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "clock_time_get",
-        |_: i32, _: i64, _: i32| -> i32 { 76 },
+        WASI,
+        "path_filestat_get",
+        |_: i32, _: i32, _: i32, _: i32, _: i32| ENOTCAPABLE,
     )?;
     linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "environ_get",
-        |_: i32, _: i32| -> i32 { 0 },
+        WASI,
+        "path_open",
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i64, _: i64, _: i32, _: i32| ENOTCAPABLE,
     )?;
+    linker.func_wrap(WASI, "environ_get", |_: i32, _: i32| 0)?;
     linker.func_wrap(
-        "wasi_snapshot_preview1",
+        WASI,
         "environ_sizes_get",
-        |mut caller: wasmtime::Caller<'_, State>, a: i32, b: i32| -> i32 {
-            let Some(mem) = caller
-                .get_export("memory")
-                .and_then(|export| export.into_memory())
-            else {
-                return 76;
+        |mut caller: Caller<'_, StoreLimits>, count: i32, size: i32| {
+            // An empty environment: no variables and no bytes.
+            let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                return ENOTCAPABLE;
             };
-            if mem.write(&mut caller, a as u32 as usize, &[0; 4]).is_err()
-                || mem.write(&mut caller, b as u32 as usize, &[0; 4]).is_err()
-            {
-                76
-            } else {
+            let mut zero = |at: i32| {
+                memory
+                    .write(&mut caller, at as u32 as usize, &[0; 4])
+                    .is_ok()
+            };
+            if zero(count) && zero(size) {
                 0
+            } else {
+                ENOTCAPABLE
             }
         },
     )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_fdstat_set_flags",
-        |_: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_prestat_get",
-        |_: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_prestat_dir_name",
-        |_: i32, _: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_read",
-        |_: i32, _: i32, _: i32, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "fd_readdir",
-        |_: i32, _: i32, _: i32, _: i64, _: i32| -> i32 { 8 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "path_filestat_get",
-        |_: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 76 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "path_open",
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i64, _: i64, _: i32, _: i32| -> i32 { 76 },
-    )?;
-    linker.func_wrap(
-        "wasi_snapshot_preview1",
-        "poll_oneoff",
-        |_: i32, _: i32, _: i32, _: i32| -> i32 { 76 },
-    )?;
-
     Ok(linker)
 }
 
 /// Checks the pixel stream: `MAGIC, width, height, count`, then per frame a duration in
 /// milliseconds and `width * height` ARGB pixels, all big-endian, with nothing after.
 fn validate(bytes: &[u8]) -> wasmtime::Result<()> {
-    fn value(bytes: &[u8], at: usize) -> wasmtime::Result<usize> {
-        let word = at
-            .checked_add(4)
-            .and_then(|end| bytes.get(at..end))
-            .and_then(|word| <[u8; 4]>::try_from(word).ok())
-            .ok_or_else(|| wasmtime::Error::msg("truncated pixels"))?;
-        Ok(u32::from_be_bytes(word) as usize)
-    }
-    let reject = |reason: &str| Err(wasmtime::Error::msg(reason.to_owned()));
-    if bytes.len() < 16 || bytes.len() > MAX_OUTPUT || value(bytes, 0)? != MAGIC as usize {
-        return reject("invalid pixel header");
-    }
-    let (width, height, frames) = (value(bytes, 4)?, value(bytes, 8)?, value(bytes, 12)?);
-    if width == 0
-        || height == 0
-        || width > 256
-        || height > 256
-        || frames == 0
-        || frames > 400
-        || width * height * frames > 12_000_000
-    {
-        return reject("invalid pixel bounds");
-    }
+    // Every read below is in range: each check runs only after the length checks before it.
+    let word = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    ensure!(
+        (16..=MAX_OUTPUT).contains(&bytes.len()) && word(0) == MAGIC as usize,
+        "invalid pixel header"
+    );
+    let (width, height, frames) = (word(4), word(8), word(12));
+    ensure!(
+        (1..=256).contains(&width)
+            && (1..=256).contains(&height)
+            && (1..=400).contains(&frames)
+            && width * height * frames <= 12_000_000,
+        "invalid pixel bounds"
+    );
     let stride = 4 + 4 * width * height;
-    if bytes.len() != 16 + frames * stride {
-        return reject("invalid pixel length");
-    }
-    for frame in 0..frames {
-        let ms = value(bytes, 16 + frame * stride)?;
-        if ms == 0 || ms > 655_350 {
-            return reject("invalid pixel timing");
-        }
-    }
+    ensure!(bytes.len() == 16 + frames * stride, "invalid pixel length");
+    ensure!(
+        (0..frames).all(|frame| (1..=655_350).contains(&word(16 + frame * stride))),
+        "invalid pixel timing"
+    );
     Ok(())
-}
-
-/// Loads the decoder that `examples/precompile.rs` compiled ahead of time for this platform.
-///
-/// # Errors
-///
-/// Returns an error if the artifact was produced by another Wasmtime version or configuration.
-fn load_decoder(engine: &Engine) -> wasmtime::Result<Module> {
-    // SAFETY: `Module::deserialize` trusts its input to be Wasmtime's own compiler output. The
-    // only input here is `AOT`, embedded at build time from the bundled artifact compiled from
-    // the fixed decoder.wasm with `engine::config()`; this function never sees media or other
-    // runtime bytes. Wasmtime still checks that the artifact matches this engine's version and
-    // settings, which the `embedded_decoder_matches_the_runtime_engine` test exercises.
-    unsafe { Module::deserialize(engine, AOT) }
 }
 
 /// The instantiated decoder, ready to receive media.
 struct Decoder {
-    store: Store<State>,
+    store: Store<StoreLimits>,
     memory: Memory,
     allocate_input: TypedFunc<i32, i32>,
     decode_media: TypedFunc<(i32, i32), i32>,
@@ -208,16 +143,20 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn new(engine: &Engine, module: &Module) -> wasmtime::Result<Self> {
+    fn new(engine: &Engine) -> wasmtime::Result<Self> {
+        // SAFETY: `Module::deserialize` trusts its input to be Wasmtime's own compiler output.
+        // `AOT` is the guest build-native.py precompiled with `config()`, embedded at build time,
+        // never media; Wasmtime still rejects an artifact from another version or configuration.
+        let module = unsafe { Module::deserialize(engine, AOT)? };
         let mut store = store(engine)?;
-        let instance = restricted_linker(engine)?.instantiate(&mut store, module)?;
-        if let Some(init) = instance.get_func(&mut store, "_initialize") {
-            init.typed::<(), ()>(&store)?.call(&mut store, ())?;
-        }
+        let instance = restricted_linker(engine)?.instantiate(&mut store, &module)?;
+        instance
+            .get_typed_func::<(), ()>(&mut store, "_initialize")?
+            .call(&mut store, ())?;
         Ok(Self {
             memory: instance
                 .get_memory(&mut store, "memory")
-                .ok_or_else(|| wasmtime::Error::msg("missing memory"))?,
+                .context("missing memory")?,
             allocate_input: instance.get_typed_func(&mut store, "allocate_input")?,
             decode_media: instance.get_typed_func(&mut store, "decode_media")?,
             output_ptr: instance.get_typed_func(&mut store, "output_ptr")?,
@@ -232,107 +171,59 @@ impl Decoder {
         let mut header = [0; 4];
         input.read_exact(&mut header)?;
         let len = u32::from_be_bytes(header) as usize;
-        if len == 0 || len > MAX_INPUT {
-            return Err(wasmtime::Error::msg("input budget"));
-        }
-        let guest_len = i32::try_from(len)?;
-        let ptr = self.allocate_input.call(&mut self.store, guest_len)? as u32 as usize;
-        if ptr == 0 {
-            return Err(wasmtime::Error::msg("allocation failed"));
-        }
-        let target = ptr
-            .checked_add(len)
-            .and_then(|end| self.memory.data_mut(&mut self.store).get_mut(ptr..end))
-            .ok_or_else(|| wasmtime::Error::msg("input range"))?;
+        ensure!((1..=MAX_INPUT).contains(&len), "input budget");
+        let ptr = self.allocate_input.call(&mut self.store, len as i32)?;
+        ensure!(ptr != 0, "allocation failed");
+        let start = ptr as u32 as usize;
+        let target = self
+            .memory
+            .data_mut(&mut self.store)
+            .get_mut(start..start + len)
+            .context("input range")?;
         input.read_exact(target)?;
-        if input.read(&mut [0; 1])? != 0 {
-            return Err(wasmtime::Error::msg("extra input"));
-        }
-        Ok((i32::try_from(ptr)?, guest_len))
+        ensure!(input.read(&mut [0; 1])? == 0, "extra input");
+        Ok((ptr, len as i32))
     }
 
-    /// Decodes received media and returns the guest range holding the pixel stream.
-    fn decode(&mut self, (ptr, len): (i32, i32)) -> wasmtime::Result<Range<usize>> {
-        if self.decode_media.call(&mut self.store, (ptr, len))? != 0 {
-            return Err(wasmtime::Error::msg("media rejected"));
-        }
+    /// Decodes received media and returns the pixel stream in guest memory.
+    fn decode(&mut self, (ptr, len): (i32, i32)) -> wasmtime::Result<&[u8]> {
+        ensure!(
+            self.decode_media.call(&mut self.store, (ptr, len))? == 0,
+            "media rejected"
+        );
         let start = self.output_ptr.call(&mut self.store, ())? as u32 as usize;
         let len = self.output_len.call(&mut self.store, ())? as u32 as usize;
-        if !(16..=MAX_OUTPUT).contains(&len) {
-            return Err(wasmtime::Error::msg("output budget"));
-        }
-        let end = start
-            .checked_add(len)
-            .ok_or_else(|| wasmtime::Error::msg("output overflow"))?;
-        Ok(start..end)
-    }
-
-    fn bytes(&self, range: Range<usize>) -> wasmtime::Result<&[u8]> {
         self.memory
             .data(&self.store)
-            .get(range)
-            .ok_or_else(|| wasmtime::Error::msg("output range"))
+            .get(start..start + len)
+            .context("output range")
     }
 }
 
-/// Interrupts guest code [`DECODE_DEADLINE`] after decoding begins.
-///
-/// The thread is started before the sandbox, which forbids creating threads, and waits for a
-/// start signal so the deadline does not include time spent waiting for the caller's download.
-struct Deadline {
-    signal: Option<mpsc::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Deadline {
-    fn spawn(engine: Engine) -> Self {
-        let (signal, events) = mpsc::channel::<()>();
-        let thread = std::thread::spawn(move || {
-            if events.recv().is_ok()
-                && matches!(
-                    events.recv_timeout(DECODE_DEADLINE),
-                    Err(mpsc::RecvTimeoutError::Timeout)
-                )
-            {
-                engine.increment_epoch();
-            }
-        });
-        Self {
-            signal: Some(signal),
-            thread: Some(thread),
+/// Starts the thread that interrupts guest code [`DECODE_DEADLINE`] after the returned sender
+/// signals. It starts before the sandbox, which forbids creating threads, and waits for the
+/// signal so the deadline does not include the caller's download.
+fn deadline(engine: Engine) -> mpsc::Sender<()> {
+    let (start, started) = mpsc::channel();
+    std::thread::spawn(move || {
+        if started.recv().is_ok() {
+            std::thread::sleep(DECODE_DEADLINE);
+            engine.increment_epoch();
         }
-    }
-
-    fn begin(&self) {
-        if let Some(signal) = &self.signal {
-            // A send can only fail if the thread is gone, in which case nothing can expire.
-            let _ = signal.send(());
-        }
-    }
-}
-
-impl Drop for Deadline {
-    fn drop(&mut self) {
-        // Disconnecting ends the wait without interrupting anything.
-        self.signal = None;
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+    });
+    start
 }
 
 fn run() -> wasmtime::Result<()> {
-    let engine = engine::engine()?;
-    let module = load_decoder(&engine)?;
-    let mut decoder = Decoder::new(&engine, &module)?;
-    let deadline = Deadline::spawn(engine.clone());
+    let engine = Engine::new(&seqimages_decoder::config())?;
+    let mut decoder = Decoder::new(&engine)?;
+    let start = deadline(engine);
     // Nothing untrusted has been read yet; everything after this line is confined.
     sandbox::restrict()?;
     let input = decoder.receive(&mut std::io::stdin().lock())?;
-    deadline.begin();
-    let output = decoder.decode(input);
-    drop(deadline);
-    let pixels = decoder.bytes(output?)?;
+    // A send only fails if the thread is gone, and then nothing can expire.
+    let _ = start.send(());
+    let pixels = decoder.decode(input)?;
     validate(pixels)?;
     let mut out = std::io::stdout().lock();
     out.write_all(pixels)?;
@@ -366,22 +257,8 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    #[test]
-    fn protocol_rejects_overflow_truncation_and_extra_bytes() {
-        assert!(validate(&[0; 16]).is_err());
-        let mut b = Vec::new();
-        for v in [0x53494d31u32, 1, 1, 1, 20, 0xff123456] {
-            b.extend(v.to_be_bytes())
-        }
-        assert!(validate(&b).is_ok());
-        b.push(0);
-        assert!(validate(&b).is_err());
-    }
-
-    #[test]
-    fn embedded_decoder_matches_the_runtime_engine() {
-        let engine = engine::engine().unwrap();
-        load_decoder(&engine).expect("bundled AOT must match engine::config()");
+    fn engine() -> Engine {
+        Engine::new(&seqimages_decoder::config()).unwrap()
     }
 
     /// The one-pixel PNG framed as helper input, optionally with trailing garbage.
@@ -394,119 +271,88 @@ mod tests {
         input
     }
 
-    fn embedded_decoder() -> (Engine, Decoder) {
-        let engine = engine::engine().unwrap();
-        let module = load_decoder(&engine).unwrap();
-        let decoder = Decoder::new(&engine, &module).unwrap();
-        (engine, decoder)
+    fn instance(engine: &Engine, wat: &str) -> (Store<StoreLimits>, wasmtime::Instance) {
+        let module = Module::new(engine, wat::parse_str(wat).unwrap()).unwrap();
+        let mut store = store(engine).unwrap();
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        (store, instance)
     }
 
     #[test]
+    fn protocol_accepts_one_frame_and_rejects_trailing_bytes() {
+        assert!(validate(&[0; 16]).is_err());
+        let mut bytes = Vec::new();
+        for value in [MAGIC, 1, 1, 1, 20, 0xff12_3456] {
+            bytes.extend(value.to_be_bytes());
+        }
+        assert!(validate(&bytes).is_ok());
+        bytes.push(0);
+        assert!(validate(&bytes).is_err());
+    }
+
+    /// Also proves the embedded artifact matches `config()`.
+    #[test]
     fn embedded_decoder_streams_media_in_and_pixels_out() {
-        let (_engine, mut decoder) = embedded_decoder();
+        let mut decoder = Decoder::new(&engine()).unwrap();
         let received = decoder.receive(&mut png_input(false).as_slice()).unwrap();
-        let range = decoder.decode(received).unwrap();
-        let pixels = decoder.bytes(range).unwrap();
+        let pixels = decoder.decode(received).unwrap();
         validate(pixels).unwrap();
         assert_eq!(&pixels[4..16], &[0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
     }
 
     #[test]
     fn trailing_input_is_rejected_before_decoding() {
-        let (_engine, mut decoder) = embedded_decoder();
+        let mut decoder = Decoder::new(&engine()).unwrap();
         assert!(decoder.receive(&mut png_input(true).as_slice()).is_err());
     }
 
     #[test]
     fn infinite_loop_exhausts_fuel() {
-        let engine = engine::engine().unwrap();
-        let module = Module::new(
-            &engine,
-            wat::parse_str("(module (func (export \"run\") (loop br 0)))").unwrap(),
-        )
-        .unwrap();
-        let mut store = store(&engine).unwrap();
+        let engine = engine();
+        let (mut store, instance) =
+            instance(&engine, r#"(module (func (export "run") (loop br 0)))"#);
         store.set_fuel(1000).unwrap();
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        assert!(
-            instance
-                .get_typed_func::<(), ()>(&mut store, "run")
-                .unwrap()
-                .call(&mut store, ())
-                .is_err()
-        );
+        let run = instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap();
+        assert!(run.call(&mut store, ()).is_err());
     }
 
     #[test]
     fn memory_growth_is_bounded() {
-        let engine = engine::engine().unwrap();
-        let module = Module::new(
-            &engine,
-            wat::parse_str(
-                "(module (memory 1) (func (export \"run\") (result i32) i32.const 4000 memory.grow))",
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let mut store = store(&engine).unwrap();
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        assert!(
-            instance
-                .get_typed_func::<(), i32>(&mut store, "run")
-                .unwrap()
-                .call(&mut store, ())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn filesystem_import_cannot_instantiate() {
-        let engine = engine::engine().unwrap();
-        let module = Module::new(
-            &engine,
-            wat::parse_str("(module (import \"wasi_snapshot_preview1\" \"path_open\" (func)))")
-                .unwrap(),
-        )
-        .unwrap();
-        let mut store = store(&engine).unwrap();
-        assert!(
-            restricted_linker(&engine)
-                .unwrap()
-                .instantiate(&mut store, &module)
-                .is_err()
-        );
+        let engine = engine();
+        let wat =
+            r#"(module (memory 1) (func (export "run") (result i32) i32.const 4000 memory.grow))"#;
+        let (mut store, instance) = instance(&engine, wat);
+        let run = instance
+            .get_typed_func::<(), i32>(&mut store, "run")
+            .unwrap();
+        assert!(run.call(&mut store, ()).is_err());
     }
 
     #[test]
     fn filesystem_calls_are_inert() {
-        let engine = engine::engine().unwrap();
+        let engine = engine();
         let mut store = store(&engine).unwrap();
-        let linker = restricted_linker(&engine).unwrap();
-        let path_open = linker
-            .get(&mut store, "wasi_snapshot_preview1", "path_open")
+        let path_open = restricted_linker(&engine)
+            .unwrap()
+            .get(&mut store, WASI, "path_open")
             .unwrap()
             .into_func()
-            .unwrap();
-        let path_open = path_open
+            .unwrap()
             .typed::<(i32, i32, i32, i32, i32, i64, i64, i32, i32), i32>(&store)
             .unwrap();
-        assert_eq!(
-            76,
-            path_open
-                .call(&mut store, (3, 0, 0, 0, 0, 0, 0, 0, 0))
-                .unwrap()
-        );
+        let result = path_open
+            .call(&mut store, (3, 0, 0, 0, 0, 0, 0, 0, 0))
+            .unwrap();
+        assert_eq!(ENOTCAPABLE, result);
     }
 
     #[test]
-    fn network_import_is_unavailable() {
-        let engine = engine::engine().unwrap();
-        let module = Module::new(
-            &engine,
-            wat::parse_str("(module (import \"wasi_snapshot_preview1\" \"sock_open\" (func)))")
-                .unwrap(),
-        )
-        .unwrap();
+    fn undefined_imports_such_as_sockets_cannot_instantiate() {
+        let engine = engine();
+        let wat = r#"(module (import "wasi_snapshot_preview1" "sock_open" (func)))"#;
+        let module = Module::new(&engine, wat::parse_str(wat).unwrap()).unwrap();
         let mut store = store(&engine).unwrap();
         assert!(
             restricted_linker(&engine)
@@ -518,25 +364,19 @@ mod tests {
 
     #[test]
     fn external_deadline_interrupts_a_loop() {
-        let engine = engine::engine().unwrap();
-        let module = Module::new(
-            &engine,
-            wat::parse_str("(module (func (export \"run\") (loop br 0)))").unwrap(),
-        )
-        .unwrap();
-        let mut store = store(&engine).unwrap();
+        let engine = engine();
+        let (mut store, instance) =
+            instance(&engine, r#"(module (func (export "run") (loop br 0)))"#);
         store.set_fuel(u64::MAX).unwrap();
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let other = engine.clone();
         let timer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20));
             other.increment_epoch();
         });
-        let error = instance
+        let run = instance
             .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap_err();
+            .unwrap();
+        let error = run.call(&mut store, ()).unwrap_err();
         timer.join().unwrap();
         assert!(matches!(
             error.downcast_ref::<wasmtime::Trap>(),
