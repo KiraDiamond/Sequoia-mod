@@ -6,17 +6,23 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+# One release per tag at a time; a second run waits instead of publishing over the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  native:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/image-decoders.yml
+  build:
+    uses: ./.github/workflows/build.yml
 
-  release:
-    needs: native
-    runs-on: ubuntu-latest
+  # Publishes exactly the JAR and native source archive the build job built and tested.
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub release and upload its assets
     env:
       MODRINTH_PROJECT_SLUG: sequoia
 
@@ -26,26 +32,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download this run's tested native helpers
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: native-*
-          path: .native-artifacts
-      - name: Stage native resources
-        run: python native/stage-resources.py .native-artifacts .native-resources
+          name: jar
+          path: build/libs
 
-      - name: Setup Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          distribution: temurin
-          java-version: '21'
-          cache: gradle
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Build release jar
-        run: ./gradlew clean build remapJar --stacktrace -Pbackend_environment=production
+          name: corresponding-source
+          path: build/corresponding-source
 
       - name: Resolve release metadata
         id: release_metadata
@@ -81,30 +76,39 @@ jobs:
             echo "minecraft_version=${minecraft_version}"
             echo "version_number=${version_number}"
             echo "version_type=${version_type}"
-            echo "changelog<<EOF"
+            delimiter="changelog_$(openssl rand -hex 16)"
+            echo "changelog<<${delimiter}"
             echo "${changelog}"
-            echo "EOF"
+            echo "${delimiter}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate SHA-256 files
         shell: bash
         run: |
           set -euo pipefail
-          for file in build/libs/*.jar; do
+          for file in build/libs/*.jar build/corresponding-source/*; do
             sha256sum "$file" > "$file.sha256"
           done
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             build/libs/*.jar
             build/libs/*.jar.sha256
+            build/corresponding-source/*
 
       - name: Publish to Modrinth
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          VERSION_NUMBER: ${{ steps.release_metadata.outputs.version_number }}
+          CHANGELOG: ${{ steps.release_metadata.outputs.changelog }}
+          MINECRAFT_VERSION: ${{ steps.release_metadata.outputs.minecraft_version }}
+          VERSION_TYPE: ${{ steps.release_metadata.outputs.version_type }}
+          MOD_JAR: ${{ steps.release_metadata.outputs.mod_jar }}
+          SOURCE_ARCHIVE: build/corresponding-source/sequoia-images-native-source.zip
         shell: bash
         run: |
           set -euo pipefail
@@ -124,12 +128,12 @@ jobs:
           fi
 
           payload="$(jq -cn \
-            --arg name "Sequoia ${{ steps.release_metadata.outputs.version_number }}" \
-            --arg version_number "${{ steps.release_metadata.outputs.version_number }}" \
-            --arg changelog "${{ steps.release_metadata.outputs.changelog }}" \
+            --arg name "Sequoia ${VERSION_NUMBER}" \
+            --arg version_number "${VERSION_NUMBER}" \
+            --arg changelog "${CHANGELOG}" \
             --arg project_id "${project_id}" \
-            --arg minecraft_version "${{ steps.release_metadata.outputs.minecraft_version }}" \
-            --arg version_type "${{ steps.release_metadata.outputs.version_type }}" \
+            --arg minecraft_version "${MINECRAFT_VERSION}" \
+            --arg version_type "${VERSION_TYPE}" \
             '{
               name: $name,
               version_number: $version_number,
@@ -141,7 +145,7 @@ jobs:
               loaders: ["fabric"],
               featured: true,
               status: "listed",
-              file_parts: ["primary"],
+              file_parts: ["primary", "source"],
               primary_file: "primary"
             }'
           )"
@@ -151,4 +155,5 @@ jobs:
             -H "Authorization: ${MODRINTH_TOKEN}" \
             -H "User-Agent: SequoiaWynncraft/sequoia-mod-release-workflow" \
             --form-string "data=${payload}" \
-            -F "primary=@${{ steps.release_metadata.outputs.mod_jar }}"
+            -F "primary=@${MOD_JAR}" \
+            -F "source=@${SOURCE_ARCHIVE}"

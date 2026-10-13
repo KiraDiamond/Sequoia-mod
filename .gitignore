@@ -123,12 +123,9 @@ runs/
 !gradle-wrapper.jar
 /.devauth/microsoft_accounts.json
 
-# Image decoder build output
+# Image decoder builds; native/out/ is outside build/ so Gradle's clean keeps it.
 native/decoder/target/
-# Rust binary sources, not output, despite the bin pattern above.
-!native/decoder/src/bin/
+native/out/
 __pycache__/
-
-# Decoder artifacts staged from the current CI run, outside build/ so clean keeps them.
-.native-artifacts/
-.native-resources/
+# Rust binary sources, despite the bin pattern above.
+!native/decoder/src/bin/

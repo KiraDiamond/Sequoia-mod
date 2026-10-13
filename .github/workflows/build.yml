@@ -1,79 +1,186 @@
 name: Build
 
+# One pipeline from source to JAR: the decoder guest is built once from authenticated sources,
+# each native helper embeds exactly that guest, and the JAR packages the verified helpers.
+# Release calls this workflow and publishes the JAR it built and tested.
 on:
-  push:
-    branches: ["**"]
-    tags-ignore:
-      - "v*"
   pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test source verification and packaging
+        run: python3 -m unittest discover -s native/tests -p test_build_inputs.py
+      # Caches are keyed by every input; PR runs cannot write main's entries, and tag builds
+      # compile everything they ship.
+      - name: Restore a guest built from the same inputs
+        id: cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/out/guest
+          key: guest-${{ hashFiles('native/sources.json', 'native/guest.py', 'native/build-wasm.sh', 'native/wasm/decoder.c', 'native/keys/**') }}
+      - name: Build the guest from authenticated sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          JOBS: '4'
+        run: python3 native/guest.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest
+          path: native/out/guest/
+          if-no-files-found: error
+          retention-days: 14
+
   native:
-    uses: ./.github/workflows/image-decoders.yml
+    name: ${{ matrix.platform }}
+    needs: guest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: windows-x86_64, runner: windows-2025}
+          - {platform: windows-aarch64, runner: windows-11-arm}
+          - {platform: linux-x86_64, runner: ubuntu-24.04}
+          - {platform: linux-aarch64, runner: ubuntu-24.04-arm}
+          - {platform: macos-x86_64, runner: macos-15-intel}
+          - {platform: macos-aarch64, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guest
+          path: native/out/guest
+      - name: Restore a helper built from the same inputs
+        id: cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            native/out/sandbox/${{ matrix.platform }}
+            native/out/${{ matrix.platform }}
+          key: native-${{ matrix.platform }}-${{ hashFiles('native/out/guest/decoder.wasm', 'native/decoder/**', 'native/sandbox.cpp', 'native/windows-probe.cpp', 'native/build-native.py') }}
+      - name: Install the musl linker
+        if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install the pinned Rust toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: native/decoder
+        run: |
+          # The Windows ARM runner's rustup may default to x64; build with the native ARM compiler.
+          if [[ "$PLATFORM" == windows-aarch64 ]]; then rustup set default-host aarch64-pc-windows-msvc; fi
+          rustup toolchain install
+      # A restored helper skips compilation and the Rust unit tests; the probes always run.
+      - name: Build, test and verify the helper
+        shell: bash
+        env:
+          RESTORED: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          if [[ "$RESTORED" == true ]]; then set -- --verify-only; fi
+          python native/build-native.py "$PLATFORM" "$@"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ matrix.platform }}
+          path: |
+            native/out/sandbox/${{ matrix.platform }}/
+            native/out/${{ matrix.platform }}/validation.json
+          if-no-files-found: error
+          retention-days: 14
 
   build:
     needs: native
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Download this run's tested native helpers
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: native-*
-          path: .native-artifacts
-      - name: Stage native resources
-        run: python native/stage-resources.py .native-artifacts .native-resources
-
-      - name: Setup Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
           cache: gradle
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guest
+          path: native/out/guest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: native/out
+      - name: Check the bundled notices against Cargo.lock and the toolchain
+        working-directory: native/decoder
+        run: |
+          rustup toolchain install
+          cargo fetch --locked
+          python3 ../notices.py check
+      - name: Assemble the verified helpers and their corresponding source
+        run: |
+          python3 native/guest.py --sources-only
+          python3 native/package.py --require-all
       - name: Build
         run: ./gradlew clean build remapJar --stacktrace
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jar
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: corresponding-source
+          path: native/out/dist/
+          if-no-files-found: error
+          retention-days: 14
 
   windows-updater-tests:
     needs: native
     runs-on: windows-latest
-
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Download this run's tested native helpers
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: native-*
-          path: .native-artifacts
-      - name: Stage native resources
-        run: python native/stage-resources.py .native-artifacts .native-resources
-
-      - name: Setup Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
           cache: gradle
-
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      # Gradle packages every platform's helper, so take all of this run's builds.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: native/out
       - name: Run updater and image preview tests on Windows
         run: .\gradlew.bat test --tests com.seqwawa.seq.update.UpdateManagerTest --tests com.seqwawa.seq.update.UpdateApplierTest --tests "com.seqwawa.seq.images.*" --stacktrace
-
-      - name: Upload Windows updater test reports
+      - name: Upload Windows test reports
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

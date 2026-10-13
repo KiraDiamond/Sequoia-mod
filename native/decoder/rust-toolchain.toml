@@ -1,0 +1,4 @@
+# Pinned so CI-built helpers come from a known compiler. build-native.py runs cargo here.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"

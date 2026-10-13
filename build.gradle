@@ -138,8 +138,10 @@ tasks.withType(Test).configureEach {
     useJUnitPlatform()
 }
 
-// Native helpers come from the source-build workflow, never from tracked binaries.
-def nativeResources = file(providers.gradleProperty("native_resources_dir").getOrElse(".native-resources"))
+// Decoder helpers come from native/build-native.py, never from tracked binaries.
+// -Pallow_partial_native permits a local build with only some platforms.
+def nativeResources = file("native/out")
+def allowPartialNative = providers.gradleProperty("allow_partial_native").isPresent()
 def requiredNativeHelpers = [
         "windows-x86_64/seqimages-decoder.exe", "windows-x86_64/sandbox.exe",
         "windows-aarch64/seqimages-decoder.exe", "windows-aarch64/sandbox.exe",
@@ -149,11 +151,12 @@ def requiredNativeHelpers = [
 
 processResources {
     from(nativeResources) {
-        include requiredNativeHelpers.collect { "sandbox/${it}" }
+        include requiredNativeHelpers.collect { "sandbox/${it}" } + ["sandbox/provenance.json"]
     }
+    inputs.property "allow_partial_native", allowPartialNative
     doFirst {
         def missing = requiredNativeHelpers.findAll { !new File(nativeResources, "sandbox/${it}").isFile() }
-        if (!missing.isEmpty()) {
+        if (!missing.isEmpty() && !allowPartialNative) {
             throw new GradleException("Missing native decoder builds: ${missing.join(', ')}. See native/README.md.")
         }
     }
