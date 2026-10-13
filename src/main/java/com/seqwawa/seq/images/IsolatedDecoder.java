@@ -63,6 +63,7 @@ final class IsolatedDecoder {
             .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z/AfAAQAAf8iCjrwAAAAAElFTkSuQmCC");
     private static Path extractionRoot;
     // File key and owner of extractionRoot when it was created; another directory at that path is not it.
+    // Windows reports no file key, but there the root is in the user's own temp directory.
     private static List<String> extractionRootIdentity;
 
     private record BundledResource(String hash, int size) {}

@@ -13,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 class HelperIntegrityTest {
     @FunctionalInterface
@@ -37,6 +39,7 @@ class HelperIntegrityTest {
     }
 
     @Test
+    @DisabledOnOs(value = OS.WINDOWS, disabledReason = "no file key; the root is in the user's own temp directory")
     void anotherDirectoryAtTheRootPathIsNotTrusted() throws Exception {
         isolatedRoot(() -> {
             Path original = helper().getParent().getParent();
