@@ -44,7 +44,6 @@ public class UpdateManager implements NotificationAccessor {
     private static final URI DEFAULT_RELEASES_LATEST_API =
             URI.create("https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/releases/latest");
     private static final Pattern SEMVER_PATTERN = Pattern.compile("^v?(\\d+)\\.(\\d+)\\.(\\d+)$");
-    private static final String CUSTOM_FEATURE_BUILD = "images";
 
     private static UpdateManager instance;
 
@@ -121,10 +120,6 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     public void applyPendingUpdate(boolean exitAfterInstall) {
-        if (blockUpstreamUpdates()) {
-            sendNotification(statusLine);
-            return;
-        }
         ReleaseCandidate target = pendingRelease;
         if (target == null) {
             sendNotification("No pending update available.");
@@ -161,42 +156,7 @@ public class UpdateManager implements NotificationAccessor {
         }
     }
 
-    private boolean blockUpstreamUpdates() {
-        // Stock releases cannot preserve features carried by a custom build.
-        if (!isCustomFeatureBuild(resolveInstalledVersion())) return false;
-        pendingRelease = null;
-        statusLine = "Upstream updates are disabled for custom builds.";
-        return true;
-    }
-
-    /**
-     * True for builds that carry features absent from stock releases, marked by an
-     * {@code images} identifier in the SemVer build metadata (for example
-     * {@code 1.10.8+images.1}). Other build metadata, such as a CI build number, still updates.
-     */
-    static boolean isCustomFeatureBuild(String version) {
-        int start = buildMetadataStart(version);
-        if (start == version.length()) return false;
-        for (String identifier : version.substring(start + 1).split("\\."))
-            if (identifier.equalsIgnoreCase(CUSTOM_FEATURE_BUILD)) return true;
-        return false;
-    }
-
-    private static String withoutBuildMetadata(String version) {
-        return version.substring(0, buildMetadataStart(version));
-    }
-
-    /** Index of the '+' that starts SemVer build metadata, or the length if there is none. */
-    private static int buildMetadataStart(String version) {
-        int plus = version.indexOf('+');
-        return plus < 0 ? version.length() : plus;
-    }
-
     private void checkForUpdates(boolean manualTrigger) {
-        if (blockUpstreamUpdates()) {
-            if (manualTrigger) sendNotification(statusLine);
-            return;
-        }
         if (checking) {
             if (manualTrigger) {
                 sendNotification("Update check already running.");
@@ -327,7 +287,6 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     void applyRelease(ReleaseCandidate release, boolean exitAfterInstall) {
-        if (blockUpstreamUpdates()) return;
         try {
             Path gameDir = resolveGameDir();
             Path modsDir = gameDir.resolve("mods");
@@ -655,13 +614,12 @@ public class UpdateManager implements NotificationAccessor {
     }
 
     static boolean isNewer(String latest, String installed) {
-        Matcher latestMatcher = SEMVER_PATTERN.matcher(withoutBuildMetadata(latest));
+        Matcher latestMatcher = SEMVER_PATTERN.matcher(latest);
         if (!latestMatcher.matches()) {
             return false;
         }
 
-        // SemVer build metadata never affects precedence: 1.10.8+build.7 is release 1.10.8.
-        Matcher installedMatcher = SEMVER_PATTERN.matcher(withoutBuildMetadata(installed));
+        Matcher installedMatcher = SEMVER_PATTERN.matcher(installed);
         if (!installedMatcher.matches()) {
             return !latest.equals(installed);
         }
