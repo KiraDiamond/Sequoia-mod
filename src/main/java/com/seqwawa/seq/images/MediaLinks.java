@@ -14,6 +14,7 @@ final class MediaLinks {
             "cdn.discordapp.com",
             "media.discordapp.net",
             "media.tenor.com",
+            "media1.tenor.com",
             "c.tenor.com",
             "tenor.com",
             "www.tenor.com",

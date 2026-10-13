@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -64,6 +66,21 @@ class MediaDownloadTest {
         assertThrows(
                 IOException.class,
                 () -> MediaDownload.readLimited(new ByteArrayInputStream(new byte[1]), 32, -1, System.nanoTime() - 1));
+    }
+
+    @Test
+    void tenorPagesResolveToTheirMediaHost() throws Exception {
+        byte[] gif = "GIF89a....".getBytes(StandardCharsets.US_ASCII);
+        String page = "<meta property=\"og:image\" content=\"https://media1.tenor.com/m/a/cat.gif\">";
+        var requested = new ArrayList<URI>();
+        MediaDownload.Exchange exchange = (uri, limit, end) -> {
+            requested.add(uri);
+            byte[] body = uri.getHost().equals("tenor.com") ? page.getBytes(StandardCharsets.UTF_8) : gif;
+            return new MediaDownload.Reply(200, null, body);
+        };
+        assertArrayEquals(
+                gif, MediaDownload.fetch(URI.create("https://tenor.com/view/cat-gif-1"), exchange, deadline()));
+        assertEquals(URI.create("https://media1.tenor.com/m/a/cat.gif"), requested.get(1));
     }
 
     @Test
