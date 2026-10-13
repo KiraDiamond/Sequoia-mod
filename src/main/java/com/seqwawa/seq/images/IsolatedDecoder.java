@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
@@ -61,6 +62,8 @@ final class IsolatedDecoder {
     private static final byte[] WARM_UP_PNG = Base64.getDecoder()
             .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z/AfAAQAAf8iCjrwAAAAAElFTkSuQmCC");
     private static Path extractionRoot;
+    // File key and owner of extractionRoot when it was created; another directory at that path is not it.
+    private static List<String> extractionRootIdentity;
 
     private record BundledResource(String hash, int size) {}
 
@@ -430,15 +433,17 @@ final class IsolatedDecoder {
         }
         String hash = bundled.hash();
         boolean windows = platform.startsWith("windows-");
-        // A private directory made here; if a temp cleaner removed it, make a new one rather than
-        // recreating a path another local user could have claimed first.
-        if (extractionRoot == null || !Files.isDirectory(extractionRoot, LinkOption.NOFOLLOW_LINKS)) {
+        // A private directory made here. If a temp cleaner removed it, another local user may have
+        // claimed the path, so anything that is not the same directory is replaced by a new one.
+        List<String> current = extractionRoot == null ? List.of() : identity(extractionRoot);
+        if (current.isEmpty() || !current.equals(extractionRootIdentity)) {
             extractionRoot = (windows
                             ? Files.createTempDirectory("seqimages-sandbox-")
                             : Files.createTempDirectory(
                                     "seqimages-sandbox-",
                                     PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))))
                     .toRealPath();
+            extractionRootIdentity = identity(extractionRoot);
             extractionRoot.toFile().deleteOnExit();
         }
         Path directory = extractionRoot.resolve(hash);
@@ -473,6 +478,18 @@ final class IsolatedDecoder {
         directory.toFile().deleteOnExit();
         target.toFile().deleteOnExit();
         return target;
+    }
+
+    /** File key and owner of a directory; empty if the path is not a directory. */
+    private static List<String> identity(Path directory) {
+        try {
+            var attributes = Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isDirectory()) return List.of();
+            String owner = Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS).getName();
+            return List.of(String.valueOf(attributes.fileKey()), owner);
+        } catch (IOException missing) {
+            return List.of();
+        }
     }
 
     private static byte[] bundledBytes(String key) throws IOException {

@@ -2,6 +2,7 @@ package com.seqwawa.seq.images;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
@@ -10,28 +11,44 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 class HelperIntegrityTest {
-    @TempDir
-    Path temporary;
-
     @FunctionalInterface
     interface Check {
         void run() throws Exception;
     }
 
+    /** Runs {@code check} against a fresh extraction root, so tampering cannot affect other tests. */
     private void isolatedRoot(Check check) throws Exception {
         Field root = IsolatedDecoder.class.getDeclaredField("extractionRoot");
+        Field identity = IsolatedDecoder.class.getDeclaredField("extractionRootIdentity");
         root.setAccessible(true);
-        Object previous = root.get(null);
-        root.set(null, temporary.toRealPath());
+        identity.setAccessible(true);
+        Object previousRoot = root.get(null), previousIdentity = identity.get(null);
+        root.set(null, null);
         try {
             check.run();
         } finally {
-            root.set(null, previous);
+            root.set(null, previousRoot);
+            identity.set(null, previousIdentity);
         }
+    }
+
+    @Test
+    void anotherDirectoryAtTheRootPathIsNotTrusted() throws Exception {
+        isolatedRoot(() -> {
+            Path original = helper().getParent().getParent();
+            Path replaced = original.resolveSibling(original.getFileName() + "-replaced");
+            Files.move(original, replaced);
+            Files.createDirectory(original);
+            try (var leftovers = Files.walk(replaced)) {
+                assertNotEquals(original, helper().getParent().getParent());
+                Files.delete(original);
+                for (Path path : leftovers.sorted(Comparator.reverseOrder()).toList()) Files.delete(path);
+            }
+        });
     }
 
     private Path helper() throws Exception {
