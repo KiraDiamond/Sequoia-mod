@@ -26,7 +26,8 @@ TARGETS = {
     "macos-x86_64": "x86_64-apple-darwin",
     "macos-aarch64": "aarch64-apple-darwin",
 }
-# SHA-256 of the pixels the helper decodes from src/test/resources/klipy-report.mp4.
+FIXTURE = ROOT / "src/test/resources/klipy-report.mp4"
+# SHA-256 of the pixels the helper decodes from FIXTURE.
 EXPECTED_PIXELS = "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033c2c"
 
 parser = argparse.ArgumentParser()
@@ -39,6 +40,9 @@ host = {"Windows": "windows", "Linux": "linux", "Darwin": "macos"}[platform.syst
 arch = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}[platform.machine().lower()]
 if args.platform != f"{host}-{arch}":
     sys.exit(f"build {args.platform} on a matching runner, not {host}-{arch}")
+if not args.guest and not FIXTURE.exists():
+    sys.exit(f"the helper checks need {FIXTURE.relative_to(ROOT)} from the repository; "
+             "pass --guest to build without them")
 windows = host == "windows"
 target = args.target or TARGETS[args.platform]
 out = ROOT / "native/out/sandbox" / args.platform
@@ -162,7 +166,7 @@ def check_denials(scratch):
 
 
 def verify():
-    media = (ROOT / "src/test/resources/klipy-report.mp4").read_bytes()
+    media = FIXTURE.read_bytes()
     with tempfile.TemporaryDirectory(prefix="seqimages-native-test-") as temp:
         scratch = pathlib.Path(temp).resolve()
         code, pixels, err = decode(scratch, media)
