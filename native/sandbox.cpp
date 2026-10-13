@@ -350,9 +350,12 @@ int wmain(int argc,wchar_t** argv) {
   startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;startup.StartupInfo.hStdInput=input;startup.StartupInfo.hStdOutput=output;startup.StartupInfo.hStdError=error;
   std::wstring command;
   for(int i=4+count;i<argc;i++){if(!command.empty())command+=L" ";command+=quote(argv[i]);}
-  // A minimal environment keeps launcher secrets and injection options out of the child.
+  // A fresh environment keeps launcher secrets and injection options out of the child. Creating
+  // an AppContainer process fails with ERROR_ENVVAR_NOT_FOUND without LOCALAPPDATA.
   wchar_t windows[MAX_PATH];check(GetWindowsDirectoryW(windows,MAX_PATH)>0,"Windows directory");
-  std::vector<std::wstring> vars={L"SystemRoot="+std::wstring(windows),L"windir="+std::wstring(windows)};
+  wchar_t local[32768];check(GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768)>0,"Local app data");
+  std::vector<std::wstring> vars={L"LOCALAPPDATA="+std::wstring(local),L"SystemRoot="+std::wstring(windows),L"TEMP="+scratch.wstring(),
+   L"TMP="+scratch.wstring(),L"windir="+std::wstring(windows)};
   std::wstring environment;for(auto& v:vars){environment+=v;environment+=L'\0';}environment+=L'\0';
   PROCESS_INFORMATION pi{};
   check(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,TRUE,
