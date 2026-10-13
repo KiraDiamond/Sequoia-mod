@@ -86,8 +86,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Record only the file name, so a downloaded asset checks with sha256sum -c.
           for file in build/libs/*.jar build/corresponding-source/*; do
-            sha256sum "$file" > "$file.sha256"
+            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")") > "$file.sha256"
           done
 
       - name: Publish GitHub Release
