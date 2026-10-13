@@ -2,8 +2,16 @@ package com.seqwawa.seq.images;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.managers.DiscordRankChatDecorator;
-
+import java.io.IOException;
+import java.net.URI;
+import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
@@ -13,101 +21,56 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.Style;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.net.URI;
-import java.util.Optional;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
-
 public final class ImagePreviews {
     private static final String PREFIX = "seqimg:";
-    private static final Logger LOG = LoggerFactory.getLogger("Sequoia Images");
     private static final ThreadPoolExecutor DOWNLOADS =
-            new ThreadPoolExecutor(
-                    2,
-                    2,
-                    0,
-                    TimeUnit.SECONDS,
-                    new ArrayBlockingQueue<>(16),
-                    r -> {
-                        var t = new Thread(r, "Sequoia image download");
-                        t.setDaemon(true);
-                        return t;
-                    });
+            new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), r -> {
+                var t = new Thread(r, "Sequoia image download");
+                t.setDaemon(true);
+                return t;
+            });
     private static final AtomicBoolean CLEAR_REQUESTED = new AtomicBoolean();
-    private static final PreviewCache CACHE =
-            new PreviewCache(
-                    DOWNLOADS,
-                    task -> Minecraft.getInstance().execute(task),
-                    ImagePreviews::load,
-                    System::nanoTime);
+    private static final AtomicBoolean PREPARED = new AtomicBoolean();
+    static final PreviewCache CACHE = new PreviewCache(
+            DOWNLOADS, task -> Minecraft.getInstance().execute(task), ImagePreviews::load, System::nanoTime);
 
     public static void initialize() {
-        ClientCommandRegistrationCallback.EVENT.register(
-                (dispatcher, registry) ->
-                        dispatcher.register(
-                                ClientCommandManager.literal("seqimages")
-                                        .then(
-                                                ClientCommandManager.literal("preview")
-                                                        .then(
-                                                                ClientCommandManager.argument(
-                                                                                "url",
-                                                                                StringArgumentType
-                                                                                        .greedyString())
-                                                                        .executes(
-                                                                                ImagePreviews
-                                                                                        ::previewCommand)))
-                                        .then(
-                                                ClientCommandManager.literal("clear")
-                                                        .executes(
-                                                                context -> {
-                                                                    clear();
-                                                                    return 1;
-                                                                }))));
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) ->
+                dispatcher.register(ClientCommandManager.literal("seqimages")
+                        .then(ClientCommandManager.literal("preview")
+                                .then(ClientCommandManager.argument("url", StringArgumentType.greedyString())
+                                        .executes(ImagePreviews::previewCommand)))
+                        .then(ClientCommandManager.literal("clear").executes(context -> {
+                            clear();
+                            return 1;
+                        }))));
         // Disconnect fires on the network thread, and the client drops queued tasks while it
         // disconnects. Previews and their textures belong to the render thread, so the next
         // client tick clears them.
-        ClientPlayConnectionEvents.DISCONNECT.register(
-                (handler, client) -> {
-                    BridgeMedia.clear();
-                    CLEAR_REQUESTED.set(true);
-                });
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            BridgeMedia.clear();
+            CLEAR_REQUESTED.set(true);
+        });
         ClientTickEvents.END_CLIENT_TICK.register(client -> maintain());
-        ClientLifecycleEvents.CLIENT_STOPPING.register(
-                client -> {
-                    clear();
-                    BridgeMedia.clear();
-                    DOWNLOADS.shutdownNow();
-                });
-        DOWNLOADS.execute(
-                () -> {
-                    try {
-                        IsolatedDecoder.prepare();
-                    } catch (java.io.IOException failure) {
-                        LOG.debug("Sandbox preparation deferred until preview", failure);
-                    }
-                });
-        LOG.info("Sequoia Images ready");
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+            clear();
+            BridgeMedia.clear();
+            DOWNLOADS.shutdownNow();
+        });
     }
 
     private static int previewCommand(CommandContext<FabricClientCommandSource> context) {
         URI uri = MediaLinks.imageUri(StringArgumentType.getString(context, "url"));
         if (uri == null) {
             context.getSource()
-                    .sendError(
-                            Component.literal(
-                                    "Use a Discord, Klipy, Tenor, Giphy or Imgur GIF/PNG/JPEG link."));
+                    .sendError(Component.literal("Use a Discord, Klipy, Tenor, Giphy or Imgur GIF/PNG/JPEG link."));
             return 0;
         }
         context.getSource().sendFeedback(decorate(Component.literal(uri.toString())));
@@ -128,38 +91,24 @@ public final class ImagePreviews {
                         if (link.end() <= start || link.start() >= end) continue;
                         int before = Math.max(start, link.start());
                         if (before > cursor)
-                            result.append(
-                                    Component.literal(
-                                                    text.substring(cursor - start, before - start))
-                                            .withStyle(style));
+                            result.append(Component.literal(text.substring(cursor - start, before - start))
+                                    .withStyle(style));
                         if (link.start() >= start) {
                             URI uri = link.uri();
-                            boolean gif =
-                                    uri.getPath()
-                                                    .toLowerCase(java.util.Locale.ROOT)
-                                                    .endsWith(".gif")
-                                            || MediaLinks.isTenorPage(uri)
-                                            || MediaLinks.isKlipyPage(uri)
-                                            || MediaLinks.isKlipyVideo(uri);
-                            result.append(
-                                    Component.literal(gif ? "[View GIF]" : "[View Image]")
-                                            .withStyle(
-                                                    style.withColor(ChatFormatting.AQUA)
-                                                            .withBold(false)
-                                                            .withUnderlined(true)
-                                                            .withInsertion(PREFIX + uri)
-                                                            .withClickEvent(
-                                                                    new ClickEvent.OpenUrl(uri))
-                                                            .withHoverEvent(
-                                                                    new HoverEvent.ShowText(
-                                                                            Component.literal(
-                                                                                    "Hover to preview; click to enlarge")))));
+                            result.append(Component.literal(MediaLinks.isAnimated(uri) ? "[View GIF]" : "[View Image]")
+                                    .withStyle(style.withColor(ChatFormatting.AQUA)
+                                            .withBold(false)
+                                            .withUnderlined(true)
+                                            .withInsertion(PREFIX + uri)
+                                            .withClickEvent(new ClickEvent.OpenUrl(uri))
+                                            .withHoverEvent(new HoverEvent.ShowText(
+                                                    Component.literal("Hover to preview; click to enlarge")))));
                         }
                         cursor = Math.min(end, link.end());
                     }
                     if (cursor < end)
-                        result.append(
-                                Component.literal(text.substring(cursor - start)).withStyle(style));
+                        result.append(Component.literal(text.substring(cursor - start))
+                                .withStyle(style));
                     offset[0] = end;
                     return Optional.empty();
                 },
@@ -180,30 +129,23 @@ public final class ImagePreviews {
         if (uri == null) return false;
         if (!ImagePreviewSettings.enabled()) {
             graphics.setTooltipForNextFrame(
-                    Minecraft.getInstance().font,
-                    Component.literal("Image previews are disabled"),
-                    mouseX,
-                    mouseY);
+                    Minecraft.getInstance().font, Component.literal("Image previews are disabled"), mouseX, mouseY);
             return true;
         }
-        var preview = get(uri);
+        var preview = CACHE.get(uri);
         var frames = preview.frames();
         if (frames != null) {
             int maxW = Math.max(1, Math.min(256, graphics.guiWidth() - 20));
             int maxH = Math.max(1, Math.min(180, graphics.guiHeight() - 40));
             double scale = fitScale(frames, maxW, maxH);
-            int w = Math.max(1, (int) (frames.width() * scale)),
-                    h = Math.max(1, (int) (frames.height() * scale));
+            int w = Math.max(1, (int) (frames.width() * scale)), h = Math.max(1, (int) (frames.height() * scale));
             int left = Math.max(4, Math.min(mouseX + 12, graphics.guiWidth() - w - 12));
             int top = Math.max(4, Math.min(mouseY - h - 18, graphics.guiHeight() - h - 24));
             graphics.nextStratum();
-            if (draw(preview, graphics, left, top, w, h)) return true;
+            if (CACHE.draw(preview, graphics, left, top, w, h)) return true;
         }
         graphics.setTooltipForNextFrame(
-                Minecraft.getInstance().font,
-                Component.literal(preview.status(System.nanoTime())),
-                mouseX,
-                mouseY);
+                Minecraft.getInstance().font, Component.literal(preview.status(System.nanoTime())), mouseX, mouseY);
         return true;
     }
 
@@ -211,8 +153,7 @@ public final class ImagePreviews {
         URI uri = uri(style);
         if (uri == null) return false;
         if (shift) { // Insert the URL rather than the seqimg: marker.
-            if (parent instanceof net.minecraft.client.gui.screens.ChatScreen chat)
-                chat.insertText(uri.toString(), false);
+            if (parent instanceof ChatScreen chat) chat.insertText(uri.toString(), false);
         } else {
             if (!ImagePreviewSettings.enabled()) return false;
             Minecraft.getInstance().setScreen(new PreviewScreen(parent, uri));
@@ -225,22 +166,9 @@ public final class ImagePreviews {
         return Math.min(maxWidth / frames.width(), maxHeight / frames.height());
     }
 
-    static PreviewCache.Preview get(URI uri) {
-        return CACHE.get(uri);
-    }
-
-    /** Draws a ready preview; returns false while it is loading or after it failed. */
-    static boolean draw(
-            PreviewCache.Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
-        return CACHE.draw(preview, graphics, x, y, w, h);
-    }
-
     /** Starts the helper first so its sandbox setup overlaps the download. */
     private static MediaFrames load(
-            URI link,
-            MediaCancellation cancellation,
-            ByteBudget.Lease lease,
-            Consumer<MediaFrames> firstFrame)
+            URI link, MediaCancellation cancellation, ByteBudget.Lease lease, Consumer<MediaFrames> firstFrame)
             throws Exception {
         try (var decoder = IsolatedDecoder.start(cancellation)) {
             byte[] media = MediaDownload.fetch(link, cancellation, lease);
@@ -256,6 +184,15 @@ public final class ImagePreviews {
             BridgeMedia.clear();
             return;
         }
+        // Extract, verify and page in the helper once previews are on, without any network request.
+        if (PREPARED.compareAndSet(false, true))
+            DOWNLOADS.execute(() -> {
+                try {
+                    IsolatedDecoder.prepare();
+                } catch (IOException failure) {
+                    SeqClient.LOGGER.debug("[Images] Sandbox preparation deferred until preview", failure);
+                }
+            });
         CACHE.maintain();
     }
 

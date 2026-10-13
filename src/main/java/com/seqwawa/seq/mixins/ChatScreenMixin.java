@@ -1,8 +1,8 @@
 package com.seqwawa.seq.mixins;
 
 import com.seqwawa.seq.client.SeqClient;
-import com.seqwawa.seq.images.ImagePreviews;
 import com.seqwawa.seq.config.Setting;
+import com.seqwawa.seq.images.ImagePreviews;
 import com.seqwawa.seq.utils.SequoiaProfileLinks;
 import java.net.URI;
 import net.minecraft.client.Minecraft;

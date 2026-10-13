@@ -378,29 +378,17 @@ Tier colours use the `achievement.bronze` through `achievement.mythril` theme ke
 
 ## Chat image previews
 
-Supported links in chat become **[View Image]** or **[View GIF]**. Hover to preview, click to enlarge, and
-shift-click to insert the original URL. **Show image and GIF previews** (under Discord chat) turns the
-feature and all of its requests off.
+Supported links in chat become **[View Image]** or **[View GIF]**: hover to preview, click to enlarge,
+shift-click to insert the URL. **Show image and GIF previews** (under Discord chat) turns the feature and all
+of its requests off.
 
-- **Sources:** HTTPS GIF, PNG and JPEG links from `cdn.discordapp.com`, `media.discordapp.net`, Tenor, Giphy,
-  Imgur and Klipy. H.264 MP4/MOV is decoded only for Klipy's MP4 renditions of GIFs
-  (`static.klipy.com/ii/...mp4`); other video links are not previewed.
-- **Network boundary:** a preview is fetched from the allowlisted host itself, so that provider sees your IP
-  address, as a browser would. Other hosts, redirects that leave the allowlist, private or reserved
-  addresses, cookies, credentials, bodies over 8 MiB and downloads over 20 seconds are refused. This blocks
-  links to arbitrary IP-logging servers; it does not hide your address from the allowed providers, and the
-  person who posted a link cannot read those providers' request logs.
-- **Decoding:** media is never decoded in the game process. A bundled helper runs a fixed FFmpeg build in
-  WebAssembly under an OS sandbox (seccomp on Linux, Seatbelt on macOS, an AppContainer on Windows) and
-  returns at most 400 frames of up to 256 by 256 pixels.
-- **Delayed Discord media:** the bridge carries no message identity, so media Discord adds to a message later
-  appears as its own line under the sender's name instead of being matched to an earlier message. A Klipy
-  share-page link with no media in the same message says so instead of waiting.
-- **Memory:** previews stay compressed within a 64 MiB budget, loads in progress within a separate budget, and
-  a preview on screen is never evicted.
-- **Updates:** a build whose version carries `images` build metadata, such as `1.10.8+images.1`, does not
-  install stock releases, which would remove this feature. Other versions, including other build metadata,
-  update normally.
+- **Sources:** HTTPS GIF, PNG and JPEG links from Discord, Tenor, Giphy, Imgur and Klipy, plus Klipy's MP4
+  renditions of GIFs.
+- **Privacy:** previews are fetched only from those hosts, which see your IP address as a browser would.
+  Other hosts, redirects off the list, private addresses, bodies over 8 MiB and downloads over 20 seconds
+  are refused.
+- **Decoding:** media is never decoded in the game. A bundled helper runs a fixed FFmpeg build in WebAssembly
+  under an OS sandbox (seccomp on Linux, Seatbelt on macOS, an AppContainer on Windows).
 
 ## Settings
 
@@ -467,6 +455,11 @@ theme token for disabled, active, and hover states. Add alpha adjustments only w
 ## License
 
 MIT: `LICENSE.txt`.
+
+The chat image decoder bundles third-party components (FFmpeg, zlib, wasi-libc, Wasmtime and
+other Rust crates, the Rust standard library). Their notices ship in the JAR under `licenses/`,
+indexed by `licenses/NOTICES.txt`. Each release also publishes
+`sequoia-images-native-source.zip`, the corresponding source of the bundled decoder.
 
 ### Player List party synchronization
 

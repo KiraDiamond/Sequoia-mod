@@ -5,16 +5,14 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.TextureFormat;
-
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.concurrent.ArrayBlockingQueue;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.resources.Identifier;
-
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.concurrent.ArrayBlockingQueue;
 
 /**
  * Plays one preview from its compressed frames. Every frame is uploaded once into a texture
@@ -30,17 +28,15 @@ final class PreviewPlayer implements AutoCloseable {
     private final FrameAtlas atlas;
     private final Identifier id;
     private final AtlasTexture texture;
-    private final int frameCount;
     private FrameProducer producer;
     private int uploaded;
     private long startNanos;
     private long lastDrawn;
 
     /** Creates a player for an animation with at least its first frame published. */
-    PreviewPlayer(MediaFrames frames, long now) throws IOException {
+    PreviewPlayer(MediaFrames frames, FrameAtlas atlas, long now) throws IOException {
         this.frames = frames;
-        frameCount = frames.frameCount();
-        atlas = atlasFor(frames);
+        this.atlas = atlas;
         id = Identifier.fromNamespaceAndPath("seq", "image_preview_" + textureCounter++);
         texture = new AtlasTexture(atlas);
         Minecraft.getInstance().getTextureManager().register(id, texture);
@@ -51,7 +47,7 @@ final class PreviewPlayer implements AutoCloseable {
             staging.put(reader.next()).flip();
             upload(0, staging);
             uploaded = 1;
-            if (frameCount > 1) producer = new FrameProducer(frames, reader, staging);
+            if (frames.frameCount() > 1) producer = new FrameProducer(frames, reader, staging);
             else reader.close();
         } catch (IOException | RuntimeException failure) {
             reader.close();
@@ -80,13 +76,10 @@ final class PreviewPlayer implements AutoCloseable {
     }
 
     /**
-     * Draws the frame due at {@code now}. While the first loop is still being decoded or
-     * uploaded, playback holds on the newest uploaded frame rather than skipping ahead.
-     *
-     * @throws IOException if a stored frame failed its integrity check
+     * Draws the frame due at {@code now}. While the first loop is still being decoded or uploaded, playback
+     * holds on the newest uploaded frame rather than skipping ahead.
      */
-    void draw(GuiGraphics graphics, int x, int y, int width, int height, long now)
-            throws IOException {
+    void draw(GuiGraphics graphics, int x, int y, int width, int height, long now) throws IOException {
         lastDrawn = now;
         drain();
         int frame = frames.frameAt((now - startNanos) / 1_000_000);
@@ -118,7 +111,7 @@ final class PreviewPlayer implements AutoCloseable {
             producer.free.offer(ready.pixels());
         }
         if (producer.failure != null) throw producer.failure;
-        if (uploaded == frameCount) producer = null;
+        if (uploaded == frames.frameCount()) producer = null;
     }
 
     private void upload(int frame, ByteBuffer pixels) {
@@ -160,8 +153,7 @@ final class PreviewPlayer implements AutoCloseable {
             this.frames = frames;
             this.reader = reader;
             free.add(first.clear());
-            for (int i = 1; i < READY_FRAMES; i++)
-                free.add(ByteBuffer.allocateDirect(first.capacity()));
+            for (int i = 1; i < READY_FRAMES; i++) free.add(ByteBuffer.allocateDirect(first.capacity()));
             thread = Thread.ofVirtual().name("Sequoia preview frames").start(this);
         }
 
@@ -188,15 +180,14 @@ final class PreviewPlayer implements AutoCloseable {
     private static final class AtlasTexture extends AbstractTexture {
         AtlasTexture(FrameAtlas atlas) {
             var device = RenderSystem.getDevice();
-            texture =
-                    device.createTexture(
-                            () -> "Sequoia image preview",
-                            GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING,
-                            TextureFormat.RGBA8,
-                            atlas.width(),
-                            atlas.height(),
-                            1,
-                            1);
+            texture = device.createTexture(
+                    () -> "Sequoia image preview",
+                    GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_TEXTURE_BINDING,
+                    TextureFormat.RGBA8,
+                    atlas.width(),
+                    atlas.height(),
+                    1,
+                    1);
             sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
             textureView = device.createTextureView(texture);
         }

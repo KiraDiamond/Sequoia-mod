@@ -1,11 +1,9 @@
 package com.seqwawa.seq.mixins;
 
 import com.seqwawa.seq.images.ImagePreviews;
-
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Style;
-
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;

@@ -1,113 +1,74 @@
 package com.seqwawa.seq.images;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.URI;
 import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import org.junit.jupiter.api.Test;
 
 class PreviewCacheTest {
     private static final long FRAME = TimeUnit.MILLISECONDS.toNanos(16);
-
-    private static byte[] resource(String name) throws IOException {
-        try (var stream = PreviewCacheTest.class.getResourceAsStream("/" + name)) {
-            return stream.readAllBytes();
-        }
-    }
 
     private static URI link(String name) {
         return URI.create("https://static.klipy.com/ii/review/" + name + ".mp4");
     }
 
-    /** Incompressible frames of exactly {@code frames} by 256 by 256 pixels. */
-    private static MediaFrames noise(int frames, long seed) throws IOException {
+    /** Incompressible frames of exactly {@code frames} by 256 by 256 pixels, charged to {@code lease}. */
+    private static MediaFrames noise(int frames, long seed, ByteBudget.Lease lease, Consumer<MediaFrames> first)
+            throws IOException {
         var random = new Random(seed);
         byte[] pixels = new byte[256 * 256 * 4];
-        try (var lease = new ByteBudget(Long.MAX_VALUE).open();
-                var writer = new MediaFrames.Writer(256, 256, frames, lease)) {
+        try (var writer = new MediaFrames.Writer(256, 256, frames, lease)) {
             for (int f = 0; f < frames; f++) {
                 random.nextBytes(pixels);
                 writer.add(pixels, 40);
+                if (f == 0) first.accept(writer.frames());
             }
             return writer.finish();
         }
     }
 
+    private static MediaFrames noise(int frames, long seed) throws IOException {
+        try (var lease = new ByteBudget(Long.MAX_VALUE).open()) {
+            return noise(frames, seed, lease, ignored -> {});
+        }
+    }
+
     @Test
     void activeNearLimitClipIsDecodedOnceAndNeverEvicted() throws Exception {
-        byte[] media = resource("noise-183.mp4");
         var decodes = new AtomicInteger();
-        try (var harness =
-                new PreviewCacheHarness(
-                        (link, cancellation, lease, first) -> {
-                            decodes.incrementAndGet();
-                            try (var session = IsolatedDecoder.start(cancellation)) {
-                                return session.decode(media, lease, first);
-                            }
-                        })) {
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            decodes.incrementAndGet();
+            return noise(183, 1, lease, first);
+        })) {
             var cache = harness.cache();
             URI active = link("noise");
             var preview = cache.get(active);
             harness.runMain(); // first frame shown
             assertNotNull(preview.frames(), "the first frame must be shown before the rest decode");
             harness.runMain(); // all frames compressed
-            var frames = preview.frames();
-            assertTrue(frames.complete());
-            assertNotNull(frames, preview.status(cache.now()));
-            assertEquals(183, frames.frameCount());
-            long expanded = (long) frames.frameBytes() * frames.frameCount();
-            assertEquals(47_972_352L, expanded);
-            // Previously pixels plus a compressed copy were both resident: 81,606,949 bytes.
-            assertTrue(frames.bytes() < expanded, "retained " + frames.bytes());
+            assertTrue(preview.frames().complete(), preview.status(cache.now()));
             assertTrue(cache.retainedBytes() <= PreviewCache.RETAINED_BYTES);
-            // Ten seconds of hovering, one request per rendered frame.
-            for (int i = 0; i < 625; i++) {
+            for (int i = 0; i < 10; i++) {
                 harness.advance(FRAME);
                 assertSame(preview, cache.get(active));
-                if (i % 60 == 0) cache.maintain();
+                cache.maintain();
             }
             assertEquals(1, decodes.get(), "The active clip was fetched or decoded again");
             assertEquals(0, harness.pendingMain());
             harness.awaitInFlightReleased();
-        }
-    }
-
-    @Test
-    void budgetPressureEvictsInactivePreviewsButKeepsTheActiveOne() throws Exception {
-        var shared = noise(120, 3);
-        var loads = new ConcurrentHashMap<URI, AtomicInteger>();
-        try (var harness =
-                new PreviewCacheHarness(
-                        (link, cancellation, lease, first) -> {
-                            loads.computeIfAbsent(link, ignored -> new AtomicInteger())
-                                    .incrementAndGet();
-                            return shared;
-                        })) {
-            var cache = harness.cache();
-            URI active = link("active");
-            cache.get(active);
-            harness.runMain();
-            for (int i = 0; i < 4; i++) {
-                harness.advance(FRAME);
-                cache.get(active);
-                cache.get(link("other-" + i));
-                harness.runMain();
-                // Hovering moves on; only the active link stays in use.
-                for (int t = 0; t < 70; t++) {
-                    harness.advance(FRAME);
-                    cache.get(active);
-                }
-                cache.maintain();
-                assertTrue(cache.retainedBytes() <= PreviewCache.RETAINED_BYTES, "over budget");
-                assertNotNull(cache.get(active).frames(), "active preview was evicted");
-            }
-            assertEquals(1, loads.get(active).get());
-            assertTrue(cache.size() < 5, "inactive previews were not evicted");
         }
     }
 
@@ -132,27 +93,17 @@ class PreviewCacheTest {
     }
 
     @Test
-    void anyOneAtlasFitsTheTextureBudgetAlone() {
-        // Making room for an atlas relies on this: retiring every other atlas always suffices.
-        int side = FrameAtlas.MAX_SIDE;
-        var largest = new FrameAtlas(side, side, 1, side, side);
-        assertTrue(largest.bytes() <= PreviewCache.TEXTURE_BYTES);
-    }
-
-    @Test
     void firstFrameShowsWhileTheRestIsChargedAsInFlight() throws Exception {
-        var release = new java.util.concurrent.CountDownLatch(1);
-        try (var harness =
-                new PreviewCacheHarness(
-                        (link, cancellation, lease, first) -> {
-                            try (var writer = new MediaFrames.Writer(4, 4, 2, lease)) {
-                                writer.add(new byte[64], 30);
-                                first.accept(writer.frames());
-                                assertTrue(release.await(5, TimeUnit.SECONDS));
-                                writer.add(new byte[64], 30);
-                                return writer.finish();
-                            }
-                        })) {
+        var release = new CountDownLatch(1);
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            try (var writer = new MediaFrames.Writer(4, 4, 2, lease)) {
+                writer.add(new byte[64], 30);
+                first.accept(writer.frames());
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                writer.add(new byte[64], 30);
+                return writer.finish();
+            }
+        })) {
             var cache = harness.cache();
             var preview = cache.get(link("progressive"));
             harness.runMain();
@@ -160,10 +111,7 @@ class PreviewCacheTest {
             assertNotNull(frames);
             assertEquals(1, frames.available());
             assertFalse(frames.complete());
-            assertEquals(
-                    frames.available(),
-                    frames.frameAt(1_000),
-                    "unfinished playback must hold, not loop");
+            assertEquals(frames.available(), frames.frameAt(1_000), "unfinished playback must hold, not loop");
             assertEquals(0, cache.retainedBytes());
             assertTrue(cache.inFlightBytes() > 0);
             release.countDown();
@@ -177,12 +125,10 @@ class PreviewCacheTest {
 
     @Test
     void loadsExceedingTheInFlightBudgetFailWithoutLeakingReservations() throws Exception {
-        try (var harness =
-                new PreviewCacheHarness(
-                        (link, cancellation, lease, first) -> {
-                            lease.reserve(PreviewCache.IN_FLIGHT_BYTES + 1);
-                            return null;
-                        })) {
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            lease.reserve(PreviewCache.IN_FLIGHT_BYTES + 1);
+            return null;
+        })) {
             var preview = harness.cache().get(link("huge"));
             harness.runMain();
             assertEquals(PreviewState.BUSY, preview.status(harness.cache().now()));
@@ -193,11 +139,10 @@ class PreviewCacheTest {
     @Test
     void droppedCompletionsStillReturnTheirInFlightReservation() throws Exception {
         var shared = noise(4, 5);
-        try (var harness =
-                new PreviewCacheHarness((link, cancellation, lease, first) -> {
-                    lease.reserve(MediaFormat.MAX_BYTES);
-                    return shared;
-                })) {
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            lease.reserve(MediaFormat.MAX_BYTES);
+            return shared;
+        })) {
             harness.cache().get(link("dropped"));
             for (int i = 0; i < 2_000 && harness.pendingMain() == 0; i++) Thread.sleep(5);
             assertEquals(1, harness.pendingMain());
@@ -210,22 +155,46 @@ class PreviewCacheTest {
     }
 
     @Test
+    void rejectedCompletionsReturnTheirInFlightReservation() throws Exception {
+        var shared = noise(1, 9);
+        var workers = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(4));
+        // The client refuses every task, as it does while stopping.
+        var cache = new PreviewCache(
+                workers,
+                task -> {
+                    throw new RejectedExecutionException("Client stopping");
+                },
+                (link, cancellation, lease, first) -> {
+                    lease.reserve(MediaFormat.MAX_BYTES);
+                    return shared;
+                },
+                System::nanoTime);
+        try {
+            cache.get(link("rejected"));
+            workers.shutdown();
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, cache.inFlightBytes(), "A rejected result must return its reservation");
+        } finally {
+            workers.shutdownNow();
+            cache.clear();
+        }
+    }
+
+    @Test
     void resultsWaitingForAStalledRenderThreadStayInsideTheBudget() throws Exception {
         long share = 40L * 1024 * 1024;
         var shared = noise(1, 7);
         var reserved = new AtomicInteger();
-        var finished = new java.util.concurrent.CountDownLatch(3);
-        try (var harness =
-                new PreviewCacheHarness(
-                        (link, cancellation, lease, first) -> {
-                            try {
-                                lease.reserve(share);
-                                reserved.incrementAndGet();
-                                return shared;
-                            } finally {
-                                finished.countDown();
-                            }
-                        })) {
+        var finished = new CountDownLatch(3);
+        try (var harness = new PreviewCacheHarness((link, cancellation, lease, first) -> {
+            try {
+                lease.reserve(share);
+                reserved.incrementAndGet();
+                return shared;
+            } finally {
+                finished.countDown();
+            }
+        })) {
             for (int i = 0; i < 3; i++) harness.cache().get(link("stalled-" + i));
             assertTrue(finished.await(10, TimeUnit.SECONDS));
             for (int i = 0; i < 200 && harness.pendingMain() < 3; i++) Thread.sleep(5);

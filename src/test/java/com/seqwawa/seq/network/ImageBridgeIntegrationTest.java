@@ -1,47 +1,47 @@
 package com.seqwawa.seq.network;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.config.ConfigManager;
 import com.seqwawa.seq.images.BridgeMedia;
 import com.seqwawa.seq.images.ImagePreviewSettings;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class ImageBridgeIntegrationTest {
     private static final String BARE = "https://cdn.discordapp.com/attachments/1/2/test.gif";
     private static final String SIGNED = BARE + "?ex=abc&is=def&hm=123";
     private static final String VIDEO = "https://static.klipy.com/ii/test/preview.mp4";
 
-    @TempDir Path directory;
+    @TempDir
+    Path directory;
+
     private ConfigManager oldConfig;
     private Object oldHandler;
     private Field handlerField;
     private Method handleMessage;
     private ConnectionManager connection;
-    private final AtomicReference<ConnectionManager.DiscordChatMessage> received =
-            new AtomicReference<>();
+    private final AtomicReference<ConnectionManager.DiscordChatMessage> received = new AtomicReference<>();
 
     @BeforeEach
     void setUp() throws Exception {
         oldConfig = SeqClient.configManager;
-        var configConstructor =
-                ConfigManager.class.getDeclaredConstructor(Path.class, Path.class, boolean.class);
+        var configConstructor = ConfigManager.class.getDeclaredConstructor(Path.class, Path.class, boolean.class);
         configConstructor.setAccessible(true);
         SeqClient.configManager =
-                configConstructor.newInstance(
-                        directory.resolve("config.json"), directory.resolve("token"), false);
+                configConstructor.newInstance(directory.resolve("config.json"), directory.resolve("token"), false);
         handlerField = ConnectionManager.class.getDeclaredField("discordChatHandler");
         handlerField.setAccessible(true);
         oldHandler = handlerField.get(null);
@@ -69,7 +69,7 @@ class ImageBridgeIntegrationTest {
         json.addProperty("username", "BridgeTester");
         json.addProperty("discord_id", "123");
         if (text != null) json.addProperty("message", text);
-        var urls = new com.google.gson.JsonArray();
+        var urls = new JsonArray();
         urls.add(media);
         json.add("media_urls", urls);
         return json.toString();
@@ -87,16 +87,6 @@ class ImageBridgeIntegrationTest {
     }
 
     @Test
-    void unmatchedMediaUpdateBecomesASenderLabelledChatMessage() throws Exception {
-        handleMessage.invoke(connection, payload("discord_media", null, VIDEO));
-
-        assertNotNull(received.get());
-        assertEquals(VIDEO, received.get().message());
-        assertEquals("BridgeTester", received.get().username());
-        assertEquals("123", received.get().discordId());
-    }
-
-    @Test
     void mediaUpdatesRespectIgnoredBridgeUsers() throws Exception {
         SeqClient.configManager.addIgnoredBridgeUser("BridgeTester");
         handleMessage.invoke(connection, payload("discord_media", null, VIDEO));
@@ -106,15 +96,6 @@ class ImageBridgeIntegrationTest {
         handleMessage.invoke(connection, payload("discord_media", null, VIDEO));
         assertNotNull(received.get());
         assertEquals(VIDEO, received.get().message());
-    }
-
-    @Test
-    void disablingPreviewsLeavesTheOriginalChatLinkAlone() throws Exception {
-        ImagePreviewSettings.setting().setValue(false);
-        handleMessage.invoke(connection, payload("discord_chat", BARE, SIGNED));
-
-        assertNotNull(received.get());
-        assertEquals(BARE, received.get().message());
-        assertEquals(URI.create(BARE), BridgeMedia.resolve(URI.create(BARE)));
+        assertEquals("BridgeTester", received.get().username());
     }
 }

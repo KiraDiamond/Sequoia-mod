@@ -1,7 +1,5 @@
 package com.seqwawa.seq.images;
 
-import org.apache.hc.client5.http.DnsResolver;
-
 import java.net.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
@@ -10,23 +8,18 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.apache.hc.client5.http.DnsResolver;
 
 /** Resolves allowlisted media hosts to public addresses only, within the download deadline. */
 final class PublicDns implements DnsResolver {
     // The OS resolver cannot be interrupted. A stalled lookup keeps its thread until the OS
     // gives up, so lookups share two threads and fail fast when both are stuck.
     private static final ThreadPoolExecutor LOOKUPS =
-            new ThreadPoolExecutor(
-                    2,
-                    2,
-                    30,
-                    TimeUnit.SECONDS,
-                    new ArrayBlockingQueue<>(4),
-                    r -> {
-                        var thread = new Thread(r, "Sequoia media DNS");
-                        thread.setDaemon(true);
-                        return thread;
-                    });
+            new ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(4), r -> {
+                var thread = new Thread(r, "Sequoia media DNS");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     static {
         LOOKUPS.allowCoreThreadTimeOut(true);
@@ -93,11 +86,9 @@ final class PublicDns implements DnsResolver {
     }
 
     static InetAddress[] checked(InetAddress[] addresses) throws UnknownHostException {
-        if (addresses == null || addresses.length == 0)
-            throw new UnknownHostException("No public media address");
+        if (addresses == null || addresses.length == 0) throw new UnknownHostException("No public media address");
         for (var address : addresses)
-            if (!isPublic(address))
-                throw new UnknownHostException("Media host resolves to a restricted network");
+            if (!isPublic(address)) throw new UnknownHostException("Media host resolves to a restricted network");
         return addresses;
     }
 
@@ -117,8 +108,7 @@ final class PublicDns implements DnsResolver {
                     && !(a == 100 && c >= 64 && c <= 127)
                     && !(a == 169 && c == 254)
                     && !(a == 172 && c >= 16 && c <= 31)
-                    && !(a == 192
-                            && (c == 168 || c == 0 && (d == 0 || d == 2) || c == 88 && d == 99))
+                    && !(a == 192 && (c == 168 || c == 0 && (d == 0 || d == 2) || c == 88 && d == 99))
                     && !(a == 198 && (c == 18 || c == 19 || c == 51 && d == 100))
                     && !(a == 203 && c == 0 && d == 113);
         // Reject IPv6 transition, special-use and documentation ranges.

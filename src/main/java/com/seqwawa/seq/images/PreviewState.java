@@ -22,9 +22,6 @@ sealed interface PreviewState {
 
     /** The state a finished load moves to when it fails with {@code failure}. */
     static PreviewState failedWith(Throwable failure, long now) {
-        while ((failure instanceof java.util.concurrent.CompletionException
-                        || failure instanceof java.util.concurrent.ExecutionException)
-                && failure.getCause() != null) failure = failure.getCause();
         return switch (failure) {
             case MediaDownload.PendingMedia pending -> new Waiting(now + Waiting.WAIT_NANOS);
             case MediaDownload.UnresolvedKlipyPage page -> new Failed(page.getMessage());
@@ -37,9 +34,9 @@ sealed interface PreviewState {
         return switch (state) {
             case Loading loading -> "Loading image...";
             case Waiting waiting ->
-                    now - waiting.untilNanos() < 0
-                            ? "Waiting for Discord media..."
-                            : "Image link unavailable; resend it in Discord";
+                now - waiting.untilNanos() < 0
+                        ? "Waiting for Discord media..."
+                        : "Image link unavailable; resend it in Discord";
             case Ready ready -> "Image ready";
             case Failed failed -> failed.message();
         };

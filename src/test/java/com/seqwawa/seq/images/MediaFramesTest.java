@@ -1,11 +1,15 @@
 package com.seqwawa.seq.images;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
 
 class MediaFramesTest {
     private static final int W = 17, H = 19;
@@ -39,13 +43,13 @@ class MediaFramesTest {
     }
 
     @Test
-    void framesRoundTripExactlyAcrossRepeatedLoops() throws Exception {
+    void framesRoundTripExactly() throws Exception {
         try (var lease = new ByteBudget(1 << 20).open()) {
             var media = encode(lease, 20, 55, 200, 35);
-            assertEquals(310, media.timeline().cycleMs());
+            assertEquals(310, media.cycleMs());
+            assertEquals(200, media.duration(2));
             try (var reader = media.reader()) {
-                for (int loop = 0; loop < 3; loop++)
-                    for (int f = 0; f < 4; f++) assertRgbaMatches(argbFrame(f), reader.next());
+                for (int f = 0; f < 4; f++) assertRgbaMatches(argbFrame(f), reader.next());
             }
         }
     }
@@ -84,6 +88,7 @@ class MediaFramesTest {
             }
             try (var writer = new MediaFrames.Writer(W, H, 1, lease)) {
                 assertThrows(IOException.class, () -> writer.add(argbFrame(0), 0), "zero timing");
+                assertThrows(IOException.class, () -> writer.add(argbFrame(0), 655_351), "overlong timing");
                 assertThrows(IOException.class, () -> writer.add(new byte[4], 20), "short frame");
                 writer.add(argbFrame(0), 20);
                 assertThrows(IOException.class, () -> writer.add(argbFrame(1), 20), "extra frame");
@@ -117,11 +122,9 @@ class MediaFramesTest {
             writer.add(argbFrame(0), 20);
             assertEquals(1, frames.available());
             assertTrue(frames.awaitFrame(0));
-            var waiter =
-                    java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
-                            .submit(() -> frames.awaitFrame(1));
+            var waiter = Executors.newVirtualThreadPerTaskExecutor().submit(() -> frames.awaitFrame(1));
             writer.add(argbFrame(1), 20);
-            assertTrue(waiter.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(waiter.get(5, TimeUnit.SECONDS));
             try (var reader = frames.reader()) {
                 assertRgbaMatches(argbFrame(0), reader.next());
                 assertRgbaMatches(argbFrame(1), reader.next());
@@ -130,24 +133,24 @@ class MediaFramesTest {
             writer.close();
             assertFalse(frames.awaitFrame(2), "a failed stream must not block readers");
             assertFalse(frames.complete());
-            assertThrows(IllegalStateException.class, frames::timeline);
         }
     }
 
     @Test
-    void timelineLookupMatchesALinearScan() throws Exception {
+    void frameLookupMatchesALinearScan() throws Exception {
         var random = new Random(7);
         int[] durations = new int[400];
-        for (int i = 0; i < durations.length; i++) durations[i] = 1 + random.nextInt(300);
-        var timeline = FrameTimeline.of(durations);
-        for (long t = -5_000; t < 3 * timeline.cycleMs(); t += 7) {
-            long time = Math.floorMod(t, timeline.cycleMs());
-            int expected = 0;
-            while (time >= durations[expected]) time -= durations[expected++];
-            assertEquals(expected, timeline.frameAt(t), "t=" + t);
+        try (var lease = new ByteBudget(1 << 20).open();
+                var writer = new MediaFrames.Writer(1, 1, durations.length, lease)) {
+            for (int i = 0; i < durations.length; i++) writer.add(new byte[4], durations[i] = 1 + random.nextInt(300));
+            var media = writer.finish();
+            for (long t = -5_000; t < 3 * media.cycleMs(); t += 7) {
+                long time = Math.floorMod(t, media.cycleMs());
+                int expected = 0;
+                while (time >= durations[expected]) time -= durations[expected++];
+                assertEquals(expected, media.frameAt(t), "t=" + t);
+            }
         }
-        assertThrows(IOException.class, () -> FrameTimeline.of(new int[] {20, 655_351}));
-        assertThrows(IOException.class, () -> FrameTimeline.of(new int[0]));
     }
 
     @Test
@@ -157,9 +160,9 @@ class MediaFramesTest {
                 int frames = (int) Math.min(400, 12_000_000L / (w * h));
                 var atlas = FrameAtlas.of(w, h, frames, FrameAtlas.MAX_SIDE);
                 assertTrue(atlas.width() <= 4096 && atlas.height() <= 4096, w + "x" + h);
+                assertTrue(atlas.bytes() <= PreviewCache.TEXTURE_BYTES, "any one atlas fits the texture budget");
                 int last = frames - 1;
-                assertTrue(
-                        atlas.x(last) + w <= atlas.width() && atlas.y(last) + h <= atlas.height());
+                assertTrue(atlas.x(last) + w <= atlas.width() && atlas.y(last) + h <= atlas.height());
             }
         var atlas = FrameAtlas.of(100, 50, 7, 4096);
         assertEquals(0, atlas.x(0));

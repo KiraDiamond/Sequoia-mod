@@ -10,15 +10,13 @@ import com.seqwawa.seq.utils.rendering.MinecraftUiRenderer;
 import com.seqwawa.seq.utils.rendering.UiCanvas;
 import com.seqwawa.seq.utils.rendering.UiRenderMetrics;
 import com.seqwawa.seq.utils.rendering.UiRenderer;
-
+import java.awt.Color;
+import java.net.URI;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
-
 import org.jetbrains.annotations.NotNull;
-
-import java.net.URI;
 
 /**
  * Enlarged preview in a themed panel. The panel is drawn with UiCanvas; the image is drawn in
@@ -54,10 +52,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
         }
 
         boolean overClose(float x, float y) {
-            return x >= closeX()
-                    && x < closeX() + CLOSE_SIZE
-                    && y >= closeY()
-                    && y < closeY() + CLOSE_SIZE;
+            return x >= closeX() && x < closeX() + CLOSE_SIZE && y >= closeY() && y < closeY() + CLOSE_SIZE;
         }
     }
 
@@ -79,7 +74,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
             onClose();
             return;
         }
-        preview = ImagePreviews.get(uri);
+        preview = ImagePreviews.CACHE.get(uri);
         var frames = preview.frames();
         String status = frames == null ? preview.status(System.nanoTime()) : null;
         String font = SeqClient.getFontManager().getSelectedFont();
@@ -87,10 +82,8 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
         layout = layout(metrics, frames, status, font);
         var current = layout;
         boolean closeHovered =
-                current.overClose(
-                        MinecraftUiRenderer.mouseX(mouseX), MinecraftUiRenderer.mouseY(mouseY));
-        UiRenderer.renderScreen(
-                this, canvas -> drawPanel(canvas, font, current, closeHovered, status));
+                current.overClose(MinecraftUiRenderer.mouseX(mouseX), MinecraftUiRenderer.mouseY(mouseY));
+        UiRenderer.renderScreen(this, canvas -> drawPanel(canvas, font, current, closeHovered, status));
     }
 
     private Layout layout(UiRenderMetrics metrics, MediaFrames frames, String status, String font) {
@@ -103,13 +96,14 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
             contentWidth = (float) (frames.width() * scale);
             contentHeight = (float) (frames.height() * scale);
         } else {
-            float statusWidth = UiRenderer.measureText(status, font, BODY_TEXT_SIZE).width();
+            float statusWidth =
+                    UiRenderer.measureText(status, font, BODY_TEXT_SIZE).width();
             contentWidth = Math.min(maxWidth, statusWidth + 2 * padding);
             contentHeight = BODY_TEXT_SIZE + 2 * padding;
         }
-        float titleWidth = UiRenderer.measureText(title.getString(), font, TITLE_TEXT_SIZE).width();
-        float panelWidth =
-                Math.max(contentWidth, titleWidth + CLOSE_SIZE + 3 * padding) + 2 * padding;
+        float titleWidth =
+                UiRenderer.measureText(title.getString(), font, TITLE_TEXT_SIZE).width();
+        float panelWidth = Math.max(contentWidth, titleWidth + CLOSE_SIZE + 3 * padding) + 2 * padding;
         float panelHeight = header + contentHeight + 2 * padding;
         float panelX = (metrics.width() - panelWidth) / 2;
         float panelY = (metrics.height() - panelHeight) / 2;
@@ -124,8 +118,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
                 contentHeight);
     }
 
-    private void drawPanel(
-            UiCanvas canvas, String font, Layout layout, boolean closeHovered, String status) {
+    private void drawPanel(UiCanvas canvas, String font, Layout layout, boolean closeHovered, String status) {
         float width = canvas.metrics().width(), height = canvas.metrics().height();
         canvas.fillRect(0, 0, width, height, color(BACKGROUND_MODAL_OVERLAY));
         canvas.fillRect(
@@ -150,12 +143,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
                 title.getString(),
                 layout.panelX() + SequoiaUiStyle.CONTENT_PADDING,
                 layout.panelY() + SequoiaUiStyle.HEADER_HEIGHT / 2,
-                new UiCanvas.TextStyle(
-                        font,
-                        TITLE_TEXT_SIZE,
-                        color(ACCENT_PRIMARY_HOVER),
-                        UiCanvas.HorizontalAlign.LEFT,
-                        UiCanvas.VerticalAlign.MIDDLE));
+                text(font, TITLE_TEXT_SIZE, color(ACCENT_PRIMARY_HOVER), UiCanvas.HorizontalAlign.LEFT));
         canvas.fillRect(
                 layout.closeX(),
                 layout.closeY(),
@@ -166,23 +154,21 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
                 "x",
                 layout.closeX() + CLOSE_SIZE / 2,
                 layout.closeY() + CLOSE_SIZE / 2,
-                new UiCanvas.TextStyle(
+                text(
                         font,
                         BODY_TEXT_SIZE,
                         color(closeHovered ? TEXT_PRIMARY : TEXT_SECONDARY),
-                        UiCanvas.HorizontalAlign.CENTER,
-                        UiCanvas.VerticalAlign.MIDDLE));
+                        UiCanvas.HorizontalAlign.CENTER));
         if (status != null)
             canvas.drawText(
                     status,
                     layout.contentX() + layout.contentWidth() / 2,
                     layout.contentY() + layout.contentHeight() / 2,
-                    new UiCanvas.TextStyle(
-                            font,
-                            BODY_TEXT_SIZE,
-                            color(TEXT_SECONDARY),
-                            UiCanvas.HorizontalAlign.CENTER,
-                            UiCanvas.VerticalAlign.MIDDLE));
+                    text(font, BODY_TEXT_SIZE, color(TEXT_SECONDARY), UiCanvas.HorizontalAlign.CENTER));
+    }
+
+    private static UiCanvas.TextStyle text(String font, float size, Color color, UiCanvas.HorizontalAlign align) {
+        return new UiCanvas.TextStyle(font, size, color, align, UiCanvas.VerticalAlign.MIDDLE);
     }
 
     @Override
@@ -191,7 +177,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
         var current = layout;
         if (shown == null || current == null || shown.frames() == null) return;
         float guiUnitsPerUiUnit = metrics.guiUnitsPerUiUnit();
-        ImagePreviews.draw(
+        ImagePreviews.CACHE.draw(
                 shown,
                 graphics,
                 Math.round(current.contentX() * guiUnitsPerUiUnit),
@@ -205,9 +191,7 @@ final class PreviewScreen extends Screen implements MinecraftGuiOverlay {
         var current = layout;
         if (click.button() == 0
                 && current != null
-                && current.overClose(
-                        MinecraftUiRenderer.mouseX(click.x()),
-                        MinecraftUiRenderer.mouseY(click.y()))) {
+                && current.overClose(MinecraftUiRenderer.mouseX(click.x()), MinecraftUiRenderer.mouseY(click.y()))) {
             onClose();
             return true;
         }

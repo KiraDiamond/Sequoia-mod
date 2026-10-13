@@ -12,17 +12,14 @@ import java.io.IOException;
 record FrameAtlas(int frameWidth, int frameHeight, int columns, int width, int height) {
     static final int MAX_SIDE = 4096;
 
-    static FrameAtlas of(int frameWidth, int frameHeight, int frames, int maxTextureSide)
-            throws IOException {
-        DecodedFrames.validate(frameWidth, frameHeight, frames);
+    /** Placement for frames of a validated animation, within this GPU's texture limit. */
+    static FrameAtlas of(int frameWidth, int frameHeight, int frames, int maxTextureSide) throws IOException {
         int limit = Math.min(MAX_SIDE, maxTextureSide);
         int columns = Math.min(frames, limit / frameWidth);
         if (columns < 1) throw new IOException("Preview exceeds graphics texture limits");
         int rows = (frames + columns - 1) / columns;
-        if ((long) rows * frameHeight > limit)
-            throw new IOException("Preview exceeds graphics texture limits");
-        return new FrameAtlas(
-                frameWidth, frameHeight, columns, columns * frameWidth, rows * frameHeight);
+        if ((long) rows * frameHeight > limit) throw new IOException("Preview exceeds graphics texture limits");
+        return new FrameAtlas(frameWidth, frameHeight, columns, columns * frameWidth, rows * frameHeight);
     }
 
     int x(int frame) {

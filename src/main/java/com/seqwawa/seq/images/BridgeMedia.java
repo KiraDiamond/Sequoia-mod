@@ -1,13 +1,13 @@
 package com.seqwawa.seq.images;
 
 import com.google.gson.JsonParser;
-
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Maps chat links to the media the Discord bridge delivered for them.
@@ -20,6 +20,12 @@ import java.util.regex.Pattern;
 public final class BridgeMedia {
     private static final int MAX_REMEMBERED = 128;
     private static final LinkedHashMap<String, URI> RESOLVED = new LinkedHashMap<>();
+    private static final Set<String> TYPES = Set.of("discord_chat", "discord_media");
+    private static final Set<String> DISCORD_PROXIES =
+            Set.of("images-ext-1.discordapp.net", "images-ext-2.discordapp.net");
+    private static final List<Pattern> SIGNATURE = Stream.of("ex", "is", "hm")
+            .map(key -> Pattern.compile("(?:^|&)" + key + "=[0-9a-fA-F]+(?:&|$)"))
+            .toList();
 
     private BridgeMedia() {}
 
@@ -50,19 +56,16 @@ public final class BridgeMedia {
 
     public static synchronized String rewrite(String payload) {
         if (!ImagePreviewSettings.enabled()) return payload;
-        if (payload == null || payload.length() > 1_000_000 || !payload.contains("\"media_urls\""))
-            return payload;
+        if (payload == null || payload.length() > 1_000_000 || !payload.contains("\"media_urls\"")) return payload;
         try {
             var json = JsonParser.parseString(payload).getAsJsonObject();
             String type = json.get("type").getAsString();
-            if (!Set.of("discord_chat", "discord_media").contains(type)
-                    || !json.get("media_urls").isJsonArray()) return payload;
+            if (!TYPES.contains(type) || !json.get("media_urls").isJsonArray()) return payload;
             boolean chat = type.equals("discord_chat");
             if (chat
                     && (!json.has("message")
                             || !json.get("message").isJsonPrimitive()
-                            || !json.get("message").getAsJsonPrimitive().isString()))
-                return payload;
+                            || !json.get("message").getAsJsonPrimitive().isString())) return payload;
             var signed = new ArrayList<URI>();
             var klipy = new ArrayList<URI>();
             for (var value : json.getAsJsonArray("media_urls")) {
@@ -77,30 +80,28 @@ public final class BridgeMedia {
                 if (gif != null && !klipy.contains(gif)) {
                     klipy.add(gif);
                     if (MediaLinks.isKlipyVideo(gif))
-                        remember(
-                                URI.create("https://static.klipy.com" + klipyAsset(gif) + ".gif"),
-                                gif);
+                        remember(URI.create("https://static.klipy.com" + klipyAsset(gif) + ".gif"), gif);
                 }
             }
             if (chat) {
                 String message = json.get("message").getAsString();
                 List<URI> links = MediaLinks.find(message);
-                List<URI> pages =
-                        links.stream().filter(MediaLinks::isKlipyPage).distinct().toList();
+                List<URI> pages = links.stream()
+                        .filter(MediaLinks::isKlipyPage)
+                        .distinct()
+                        .toList();
                 String rewritten = replace(message, signed);
                 for (URI original : links) {
                     if (!"static.klipy.com".equalsIgnoreCase(original.getHost())
                             || !original.getRawPath().endsWith(".gif")) continue;
                     for (URI actual : klipy)
-                        if (klipyAsset(actual).equals(klipyAsset(original)))
-                            remember(original, actual);
+                        if (klipyAsset(actual).equals(klipyAsset(original))) remember(original, actual);
                 }
                 // Only media inside the same message can belong to its share page.
                 if (pages.size() == 1 && klipy.size() == 1) {
                     remember(pages.getFirst(), klipy.getFirst());
-                    rewritten =
-                            rewritten.replace(
-                                    pages.getFirst().toString(), klipy.getFirst().toString());
+                    rewritten = rewritten.replace(
+                            pages.getFirst().toString(), klipy.getFirst().toString());
                 }
                 if (rewritten.equals(message)) return payload;
                 json.addProperty("message", rewritten);
@@ -110,7 +111,8 @@ public final class BridgeMedia {
             if (klipy.isEmpty()) return payload;
             json.addProperty("type", "discord_chat");
             json.addProperty(
-                    "message", String.join(" ", klipy.stream().map(URI::toString).toList()));
+                    "message",
+                    String.join(" ", klipy.stream().map(URI::toString).toList()));
             return json.toString();
         } catch (RuntimeException invalidPayload) {
             return payload;
@@ -123,16 +125,12 @@ public final class BridgeMedia {
             if (!"https".equalsIgnoreCase(uri.getScheme())
                     || uri.getUserInfo() != null
                     || (uri.getPort() != -1 && uri.getPort() != 443)) return null;
-            if (Set.of("images-ext-1.discordapp.net", "images-ext-2.discordapp.net")
-                    .contains(uri.getHost())) {
+            if (DISCORD_PROXIES.contains(uri.getHost())) {
                 String path = uri.getRawPath();
                 String marker = "/https/static.klipy.com/";
                 int start = path.indexOf(marker);
                 if (!path.startsWith("/external/") || start < 0) return null;
-                uri =
-                        URI.create(
-                                "https://static.klipy.com/"
-                                        + path.substring(start + marker.length()));
+                uri = URI.create("https://static.klipy.com/" + path.substring(start + marker.length()));
             }
             if (!MediaLinks.allowed(uri)
                     || !"static.klipy.com".equalsIgnoreCase(uri.getHost())
@@ -160,7 +158,9 @@ public final class BridgeMedia {
             result.append(message, cursor, link.start()).append(replacement);
             cursor = link.end();
         }
-        return cursor == 0 ? message : result.append(message, cursor, message.length()).toString();
+        return cursor == 0
+                ? message
+                : result.append(message, cursor, message.length()).toString();
     }
 
     static boolean discordAttachment(URI uri) {
@@ -173,10 +173,7 @@ public final class BridgeMedia {
 
     private static boolean hasSignature(URI uri) {
         String query = uri.getRawQuery();
-        if (query == null) return false;
-        for (String key : List.of("ex", "is", "hm"))
-            if (!Pattern.compile("(?:^|&)" + key + "=[0-9a-fA-F]+(?:&|$)").matcher(query).find())
-                return false;
-        return true;
+        return query != null
+                && SIGNATURE.stream().allMatch(key -> key.matcher(query).find());
     }
 }

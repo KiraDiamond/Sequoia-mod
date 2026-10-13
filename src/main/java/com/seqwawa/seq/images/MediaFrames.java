@@ -11,15 +11,15 @@ import java.util.zip.Inflater;
 /**
  * A decoded animation held compressed for its whole cached lifetime.
  *
- * <p>Each frame is stored as its byte-wise difference from the previous frame (the first from
- * transparent black), split into R, G, B and A planes and deflated separately. Static regions
- * and opaque alpha become zero runs that DEFLATE removes, so even a playing animation is never
- * fully expanded in memory: {@link Reader} rebuilds one frame at a time, in order.
- *
- * <p>Frames are published as they are encoded, so playback can start with the first frame while
- * the {@link Writer} is still compressing the rest. Published frames never change.
+ * <p>Each frame is stored as its byte-wise difference from the previous frame (the first from transparent
+ * black), split into R, G, B and A planes and deflated, so static regions and opaque alpha cost almost
+ * nothing and the animation is never fully expanded. Frames are published as the {@link Writer} encodes
+ * them, so playback can start while the rest is still compressing.
  */
 final class MediaFrames {
+    static final int MIN_DURATION_MS = 1;
+    static final int MAX_DURATION_MS = 655_350;
+
     private enum Stream {
         FILLING,
         COMPLETE,
@@ -29,21 +29,19 @@ final class MediaFrames {
     private final int width;
     private final int height;
     private final byte[][] chunks;
-    private final int[] durations;
+    // Cumulative end time of each frame within the loop, in milliseconds.
     private final long[] ends;
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition arrived = lock.newCondition();
     // Frames below this index are fully written; the volatile write publishes them.
     private volatile int available;
     private volatile Stream stream = Stream.FILLING;
-    private volatile FrameTimeline timeline;
     private volatile long bytes;
 
     private MediaFrames(int width, int height, int frames) {
         this.width = width;
         this.height = height;
         chunks = new byte[frames][];
-        durations = new int[frames];
         ends = new long[frames];
     }
 
@@ -68,26 +66,33 @@ final class MediaFrames {
         return stream == Stream.COMPLETE;
     }
 
-    /** Timing of the finished animation. */
-    FrameTimeline timeline() {
-        var finished = timeline;
-        if (finished == null) throw new IllegalStateException("Animation still decoding");
-        return finished;
+    static boolean validDuration(int durationMs) {
+        return durationMs >= MIN_DURATION_MS && durationMs <= MAX_DURATION_MS;
     }
 
     /**
-     * Frame due {@code elapsedMs} after playback started. While frames are still arriving this
-     * does not loop and may return {@link #available()}, meaning the frame is not ready yet.
+     * Frame due {@code elapsedMs} after playback started, looping once complete. While frames are still
+     * arriving this may return {@link #available()}, meaning the frame is not ready yet.
      */
     int frameAt(long elapsedMs) {
-        var finished = timeline;
-        if (finished != null) return finished.frameAt(elapsedMs);
-        return FrameTimeline.frameEndingAfter(ends, available, Math.max(0, elapsedMs));
+        boolean looping = complete(); // read before available, which publish() writes first
+        int count = available;
+        long time = looping ? Math.floorMod(elapsedMs, ends[count - 1]) : Math.max(0, elapsedMs);
+        int found = Arrays.binarySearch(ends, 0, count, time);
+        return found >= 0 ? found + 1 : -found - 1;
     }
 
     /** Start of a published frame within the loop, in milliseconds. */
     long startMs(int frame) {
-        return FrameTimeline.startMs(ends, frame);
+        return frame == 0 ? 0 : ends[frame - 1];
+    }
+
+    int duration(int frame) {
+        return (int) (ends[frame] - startMs(frame));
+    }
+
+    long cycleMs() {
+        return ends[ends.length - 1];
     }
 
     /** RGBA bytes in one expanded frame. */
@@ -100,11 +105,7 @@ final class MediaFrames {
         return bytes;
     }
 
-    /**
-     * Waits until {@code frame} is published.
-     *
-     * @return false if the stream failed before reaching it
-     */
+    /** Waits until {@code frame} is published; false if the stream failed before reaching it. */
     boolean awaitFrame(int frame) throws InterruptedException {
         if (frame < available) return true;
         lock.lock();
@@ -168,18 +169,9 @@ final class MediaFrames {
             return frames;
         }
 
-        /**
-         * Adds and publishes the next frame.
-         *
-         * @param argb big-endian ARGB pixels exactly as the helper emits them; only read
-         * @param durationMs frame duration
-         * @throws IOException if the frame is malformed, extra, or exceeds the memory budget
-         */
+        /** Adds and publishes the next frame of big-endian ARGB pixels, as the helper emits them. */
         void add(byte[] argb, int durationMs) throws IOException {
-            if (closed
-                    || count == frames.chunks.length
-                    || argb.length != previous.length
-                    || !FrameTimeline.validDuration(durationMs))
+            if (closed || count == frames.chunks.length || argb.length != previous.length || !validDuration(durationMs))
                 throw new IOException("Invalid decoded frame");
             for (int p = 0, i = 0; p < pixels; p++, i += 4) {
                 planes[p] = (byte) (argb[i + 1] - previous[i + 1]);
@@ -197,25 +189,19 @@ final class MediaFrames {
             bytes += length + FRAME_OVERHEAD;
             cycle += durationMs;
             frames.chunks[count] = Arrays.copyOf(output, length);
-            frames.durations[count] = durationMs;
             frames.ends[count] = cycle;
             frames.publish(++count, Stream.FILLING);
         }
 
         MediaFrames finish() throws IOException {
-            if (closed || count != frames.chunks.length)
-                throw new IOException("Truncated decoded preview");
-            frames.timeline = FrameTimeline.of(frames.durations);
+            if (closed || count != frames.chunks.length) throw new IOException("Truncated decoded preview");
             frames.bytes = bytes;
             frames.publish(count, Stream.COMPLETE);
             close();
             return frames;
         }
 
-        /**
-         * Frees the compressor and scratch reservation; finished chunks stay reserved. Closing
-         * before {@link #finish()} fails the stream, releasing anyone waiting for frames.
-         */
+        /** Frees the compressor and scratch space; closing before {@link #finish()} fails the stream. */
         @Override
         public void close() {
             if (closed) return;
@@ -226,7 +212,7 @@ final class MediaFrames {
         }
     }
 
-    /** Rebuilds published frames in display order, looping once complete. Not thread-safe. */
+    /** Rebuilds published frames once each, in display order. Not thread-safe. */
     final class Reader implements AutoCloseable {
         private final Inflater inflater = new Inflater();
         private final byte[] planes = new byte[frameBytes()];
@@ -234,16 +220,8 @@ final class MediaFrames {
         private final byte[] overflow = new byte[1];
         private int next;
 
-        /**
-         * Returns the next frame as RGBA bytes. The array is reused by the following call.
-         *
-         * @throws IOException if the frame is not published yet or fails its integrity check
-         */
+        /** Returns the next frame as RGBA bytes, in an array the following call reuses. */
         byte[] next() throws IOException {
-            if (next == chunks.length) {
-                Arrays.fill(frame, (byte) 0);
-                next = 0;
-            }
             if (next >= available) throw new IOException("Preview frame not decoded yet");
             inflate(chunks[next]);
             int pixels = width * height;
@@ -261,18 +239,11 @@ final class MediaFrames {
             inflater.reset();
             inflater.setInput(chunk);
             try {
-                int read = 0;
-                while (read < planes.length) {
-                    int count = inflater.inflate(planes, read, planes.length - read);
-                    if (count == 0 && (inflater.finished() || inflater.needsInput())) break;
-                    read += count;
-                }
                 // The zlib trailer may remain once the output is full; it must end the stream.
-                if (read != planes.length
-                        || (!inflater.finished() && inflater.inflate(overflow) != 0)
+                if (inflater.inflate(planes) != planes.length
+                        || inflater.inflate(overflow) != 0
                         || !inflater.finished()
-                        || inflater.getRemaining() != 0)
-                    throw new IOException("Corrupt preview cache");
+                        || inflater.getRemaining() != 0) throw new IOException("Corrupt preview cache");
             } catch (DataFormatException corrupt) {
                 throw new IOException("Corrupt preview cache", corrupt);
             }

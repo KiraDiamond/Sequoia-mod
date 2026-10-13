@@ -2,6 +2,7 @@ package com.seqwawa.seq.images;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,9 +39,11 @@ final class IsolatedDecoder {
     private static final long DECODE_LIMIT_SECONDS = 22;
     /** Upper bound on one session, including the download the helper waits through. */
     private static final int BROKER_LIMIT_SECONDS = 60;
+
     private static final int EXIT_GRACE_SECONDS = 2;
     /** Time the Windows broker gets to stop the decoder and remove its AppContainer state. */
     private static final long BROKER_CLEANUP_MILLIS = 5_000;
+
     private static final long REAP_MILLIS = 3_000;
     private static final int DIAGNOSTIC_BYTES = 2_048;
     private static final int SCRATCH_ATTEMPTS = 20;
@@ -48,19 +51,15 @@ final class IsolatedDecoder {
     /** File the Windows broker watches for in its scratch directory to cancel cleanly. */
     static final String CANCEL_FILE = "cancel";
 
-    private static final ScheduledExecutorService WATCHDOG =
-            Executors.newSingleThreadScheduledExecutor(
-                    r -> {
-                        Thread t = new Thread(r, "Sequoia Images decoder watchdog");
-                        t.setDaemon(true);
-                        return t;
-                    });
+    private static final ScheduledExecutorService WATCHDOG = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "Sequoia Images decoder watchdog");
+        t.setDaemon(true);
+        return t;
+    });
     // Warm-up and tests only; preview loads charge the shared in-flight budget instead.
     private static final ByteBudget STANDALONE = new ByteBudget(128L * 1024 * 1024);
-    private static final byte[] WARM_UP_PNG =
-            Base64.getDecoder()
-                    .decode(
-                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z/AfAAQAAf8iCjrwAAAAAElFTkSuQmCC");
+    private static final byte[] WARM_UP_PNG = Base64.getDecoder()
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z/AfAAQAAf8iCjrwAAAAAElFTkSuQmCC");
     private static Path extractionRoot;
 
     private record BundledResource(String hash, int size) {}
@@ -78,16 +77,11 @@ final class IsolatedDecoder {
         var cancellation = new MediaCancellation();
         try (var lease = STANDALONE.open();
                 var session = start(cancellation)) {
-            return session.decode(bytes, lease);
+            return session.decode(bytes, lease, frames -> {});
         }
     }
 
-    /**
-     * Starts a helper so its runtime setup overlaps with the caller's download.
-     *
-     * @throws IOException if the platform is unsupported, the helper fails verification, or
-     *     the work was already cancelled
-     */
+    /** Starts a helper so its runtime setup overlaps with the caller's download. */
     static Session start(MediaCancellation cancellation) throws IOException {
         cancellation.check();
         String platform = platform(System.getProperty("os.name"), System.getProperty("os.arch"));
@@ -96,21 +90,19 @@ final class IsolatedDecoder {
         Path broker = windows ? resource(platform, "sandbox.exe") : null;
         Path scratch = Files.createTempDirectory("seqimages-pipes-").toRealPath();
         try {
-            var command =
-                    windows
-                            ? List.of(
-                                    broker.toString(),
-                                    Integer.toString(BROKER_LIMIT_SECONDS),
-                                    scratch.toString(),
-                                    "1",
-                                    helper.toString(),
-                                    helper.toString())
-                            : List.of(helper.toString());
+            var command = windows
+                    ? List.of(
+                            broker.toString(),
+                            Integer.toString(BROKER_LIMIT_SECONDS),
+                            scratch.toString(),
+                            "1",
+                            helper.toString(),
+                            helper.toString())
+                    : List.of(helper.toString());
             var builder = new ProcessBuilder(command).directory(scratch.toFile());
             // Don't pass launcher credentials or JVM injection options to the helper.
             var environment = builder.environment();
-            String systemRoot = environment.get("SystemRoot"),
-                    local = environment.get("LOCALAPPDATA");
+            String systemRoot = environment.get("SystemRoot"), local = environment.get("LOCALAPPDATA");
             environment.clear();
             if (systemRoot != null) environment.put("SystemRoot", systemRoot);
             if (local != null) environment.put("LOCALAPPDATA", local);
@@ -136,20 +128,17 @@ final class IsolatedDecoder {
         // helper starts nothing). close() reaps these along with the helper.
         private volatile List<ProcessHandle> abortKilledDescendants;
         private MediaCancellation.Registration abortRegistration;
-        private boolean used;
         private boolean closed;
 
-        private Session(
-                Process process, Path scratch, boolean windows, MediaCancellation cancellation)
+        private Session(Process process, Path scratch, boolean windows, MediaCancellation cancellation)
                 throws IOException {
             this.process = process;
             this.scratch = scratch;
             this.windows = windows;
             this.cancellation = cancellation;
-            diagnosticsReader =
-                    Thread.ofVirtual()
-                            .name("Sequoia Images decoder diagnostics")
-                            .start(() -> retainPrefix(process.getErrorStream(), diagnostics));
+            diagnosticsReader = Thread.ofVirtual()
+                    .name("Sequoia Images decoder diagnostics")
+                    .start(() -> retainPrefix(process.getErrorStream(), diagnostics));
             try {
                 abortRegistration = cancellation.attach(this::abort);
             } catch (IOException cancelled) {
@@ -158,35 +147,19 @@ final class IsolatedDecoder {
             }
         }
 
-        /**
-         * Sends media to the helper and streams its validated frames into the cache format.
-         *
-         * @throws InterruptedIOException if the preview was cancelled
-         * @throws IOException with the underlying cause if decoding failed or timed out
-         */
-        MediaFrames decode(byte[] media, ByteBudget.Lease lease) throws IOException {
-            return decode(media, lease, frames -> {});
-        }
-
-        /** As {@link #decode(byte[], ByteBudget.Lease)}, publishing the first frame early. */
-        MediaFrames decode(byte[] media, ByteBudget.Lease lease, Consumer<MediaFrames> firstFrame)
-                throws IOException {
-            if (used) throw new IllegalStateException("Decoder session already used");
-            used = true;
-            ScheduledFuture<?> timeout =
-                    WATCHDOG.schedule(
-                            () -> {
-                                timedOut.set(true);
-                                abort();
-                            },
-                            DECODE_LIMIT_SECONDS,
-                            TimeUnit.SECONDS);
+        /** Sends media to the helper and streams its validated frames, publishing the first one early. */
+        MediaFrames decode(byte[] media, ByteBudget.Lease lease, Consumer<MediaFrames> firstFrame) throws IOException {
+            ScheduledFuture<?> timeout = WATCHDOG.schedule(
+                    () -> {
+                        timedOut.set(true);
+                        abort();
+                    },
+                    DECODE_LIMIT_SECONDS,
+                    TimeUnit.SECONDS);
             try {
                 cancellation.check();
                 MediaFormat.identify(media);
-                try (var out =
-                        new DataOutputStream(
-                                new BufferedOutputStream(process.getOutputStream()))) {
+                try (var out = new DataOutputStream(new BufferedOutputStream(process.getOutputStream()))) {
                     out.writeInt(media.length);
                     out.write(media);
                 }
@@ -194,7 +167,7 @@ final class IsolatedDecoder {
                 try (InputStream input = process.getInputStream()) {
                     frames = DecodedFrames.read(input, lease, firstFrame);
                 }
-                await(process, EXIT_GRACE_SECONDS, ignored -> terminate());
+                await(process, EXIT_GRACE_SECONDS);
                 cancellation.check();
                 return frames;
             } catch (IOException failure) {
@@ -212,20 +185,20 @@ final class IsolatedDecoder {
                 return cancelled;
             }
             if (failure instanceof ByteBudget.Exhausted) return failure;
-            var explained =
-                    new IOException(
-                            timedOut.get()
-                                    ? "Image decoding exceeded the safety time limit"
-                                    : "Image could not be decoded within safety limits",
-                            failure);
+            var explained = new IOException(
+                    timedOut.get()
+                            ? "Image decoding exceeded the safety time limit"
+                            : "Image could not be decoded within safety limits",
+                    failure);
             // Stop the helper before reading its diagnostics so the text is complete.
             try {
                 terminate();
             } catch (IOException cleanup) {
                 explained.addSuppressed(cleanup);
             }
+            // Helper stderr is kept for logs only; it never contains URLs or credentials.
             String detail = diagnosticText();
-            if (!detail.isEmpty()) explained.addSuppressed(new HelperDiagnostics(detail));
+            if (!detail.isEmpty()) explained.addSuppressed(new IOException("Helper reported: " + detail));
             return explained;
         }
 
@@ -237,19 +210,13 @@ final class IsolatedDecoder {
                 process.destroyForcibly();
                 return;
             }
-            if (!requestBrokerCancel()) {
-                // The kill scans the process tree; keep that off the cancelling thread.
-                WATCHDOG.execute(
-                        () -> {
-                            if (process.isAlive()) killForAbort();
-                        });
-                return;
-            }
+            // The kill scans the process tree; keep that off the cancelling thread.
+            long grace = requestBrokerCancel() ? BROKER_CLEANUP_MILLIS : 0;
             WATCHDOG.schedule(
                     () -> {
                         if (process.isAlive()) killForAbort();
                     },
-                    BROKER_CLEANUP_MILLIS,
+                    grace,
                     TimeUnit.MILLISECONDS);
         }
 
@@ -280,7 +247,11 @@ final class IsolatedDecoder {
          */
         private void terminate() throws IOException {
             if (process.isAlive()) {
-                boolean exitedAfterCancel = windows && cancelAndWait();
+                boolean exitedAfterCancel = windows
+                        && requestBrokerCancel()
+                        && waitUninterruptibly(
+                                process.onExit(),
+                                System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BROKER_CLEANUP_MILLIS));
                 if (!exitedAfterCancel) {
                     killAndReap(process);
                     return;
@@ -289,12 +260,6 @@ final class IsolatedDecoder {
             // An abort may have killed it without waiting for what it started.
             var started = abortKilledDescendants;
             if (started != null) reap(process, started);
-        }
-
-        /** @return true if the broker exited by itself after a cancel request */
-        private boolean cancelAndWait() {
-            if (!requestBrokerCancel()) return false;
-            return waitUninterruptibly(process, BROKER_CLEANUP_MILLIS);
         }
 
         private String diagnosticText() {
@@ -316,15 +281,19 @@ final class IsolatedDecoder {
             try {
                 terminate();
             } finally {
+                // A session closed before decode() never closed the pipes; Windows keeps them open until GC.
+                closeQuietly(process.getOutputStream());
+                closeQuietly(process.getInputStream());
                 deleteScratch(scratch);
             }
         }
     }
 
-    /** Helper stderr, kept for logs only; it never contains URLs or credentials. */
-    static final class HelperDiagnostics extends IOException {
-        HelperDiagnostics(String detail) {
-            super("Helper reported: " + detail);
+    private static void closeQuietly(Closeable stream) {
+        try {
+            stream.close();
+        } catch (IOException ignored) {
+            // The helper is already gone.
         }
     }
 
@@ -342,52 +311,16 @@ final class IsolatedDecoder {
         }
     }
 
-    /** Waits for exit even if the caller was interrupted, then restores the interrupt. */
-    static boolean waitUninterruptibly(Process process, long millis) {
-        return waitUninterruptibly(
-                process.onExit(), System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis));
-    }
-
-    /** Stops a worker process and waits for it to exit. */
-    @FunctionalInterface
-    interface Stopper {
-        void stop(Process process) throws IOException;
-    }
-
-    /** Waits for a worker to exit successfully, killing and reaping it if it does not. */
+    /** Waits for a worker to exit successfully; the caller stops it if this throws. */
     static void await(Process process, int seconds) throws IOException {
-        await(process, seconds, IsolatedDecoder::killAndReap);
-    }
-
-    /**
-     * Waits for a worker to exit successfully. On timeout or interruption {@code stop} has ended
-     * the worker before this returns; the timeout or interruption stays the primary failure.
-     */
-    static void await(Process process, int seconds, Stopper stop) throws IOException {
-        boolean exited;
         try {
-            exited = process.waitFor(seconds, TimeUnit.SECONDS);
+            if (!process.waitFor(seconds, TimeUnit.SECONDS))
+                throw new IOException("Image decoding exceeded the safety time limit");
         } catch (InterruptedException e) {
-            var cancelled = new InterruptedIOException("Image decoding cancelled");
-            stopRecording(process, stop, cancelled);
             Thread.currentThread().interrupt();
-            throw cancelled;
+            throw new InterruptedIOException("Image decoding cancelled");
         }
-        if (!exited) {
-            var timeout = new IOException("Image decoding exceeded the safety time limit");
-            stopRecording(process, stop, timeout);
-            throw timeout;
-        }
-        if (process.exitValue() != 0)
-            throw new IOException("Image could not be decoded within safety limits");
-    }
-
-    private static void stopRecording(Process process, Stopper stop, IOException primary) {
-        try {
-            stop.stop(process);
-        } catch (IOException cleanup) {
-            primary.addSuppressed(cleanup);
-        }
+        if (process.exitValue() != 0) throw new IOException("Image could not be decoded within safety limits");
     }
 
     /**
@@ -395,18 +328,9 @@ final class IsolatedDecoder {
      * AppContainer decoder ends through its job object only after the broker itself.
      */
     private static void killAndReap(Process process) throws IOException {
-        reap(process, kill(process));
-    }
-
-    /**
-     * Kills a worker and every process it started without waiting.
-     *
-     * @return the started processes, for {@link #reap}
-     */
-    private static List<ProcessHandle> kill(Process process) {
         List<ProcessHandle> started = descendants(process);
         destroy(process, started);
-        return started;
+        reap(process, started);
     }
 
     /** Processes the worker started; empty if the OS cannot list them, so a kill still runs. */
@@ -482,25 +406,20 @@ final class IsolatedDecoder {
     }
 
     static String platform(String os, String arch) throws IOException {
-        String system =
-                os.startsWith("Windows")
-                        ? "windows"
-                        : os.equals("Linux") ? "linux" : os.equals("Mac OS X") ? "macos" : null;
-        String cpu =
-                switch (arch.toLowerCase(Locale.ROOT)) {
-                    case "amd64", "x86_64" -> "x86_64";
-                    case "aarch64", "arm64" -> "aarch64";
-                    default -> null;
-                };
+        String system = os.startsWith("Windows")
+                ? "windows"
+                : os.equals("Linux") ? "linux" : os.equals("Mac OS X") ? "macos" : null;
+        String cpu = switch (arch.toLowerCase(Locale.ROOT)) {
+            case "amd64", "x86_64" -> "x86_64";
+            case "aarch64", "arm64" -> "aarch64";
+            default -> null;
+        };
         if (system == null || cpu == null)
-            throw new IOException(
-                    "Unsupported OS or CPU; use Windows, Linux or macOS on x86-64 or ARM64");
+            throw new IOException("Unsupported OS or CPU; use Windows, Linux or macOS on x86-64 or ARM64");
         return system + "-" + cpu;
     }
 
     private static synchronized Path resource(String platform, String name) throws IOException {
-        if (!Set.of("seqimages-decoder.exe", "seqimages-decoder", "sandbox.exe").contains(name))
-            throw new IOException("Unknown helper");
         String key = platform + "/" + name;
         BundledResource bundled = BUNDLED.get(key);
         byte[] bytes = null;
@@ -511,29 +430,24 @@ final class IsolatedDecoder {
         }
         String hash = bundled.hash();
         boolean windows = platform.startsWith("windows-");
-        if (extractionRoot == null) {
-            extractionRoot =
-                    (windows
-                                    ? Files.createTempDirectory("seqimages-sandbox-")
-                                    : Files.createTempDirectory(
-                                            "seqimages-sandbox-",
-                                            PosixFilePermissions.asFileAttribute(
-                                                    PosixFilePermissions.fromString("rwx------"))))
-                            .toRealPath();
+        // A private directory made here; if a temp cleaner removed it, make a new one rather than
+        // recreating a path another local user could have claimed first.
+        if (extractionRoot == null || !Files.isDirectory(extractionRoot, LinkOption.NOFOLLOW_LINKS)) {
+            extractionRoot = (windows
+                            ? Files.createTempDirectory("seqimages-sandbox-")
+                            : Files.createTempDirectory(
+                                    "seqimages-sandbox-",
+                                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))))
+                    .toRealPath();
             extractionRoot.toFile().deleteOnExit();
         }
-        Path root = extractionRoot;
-        if (Files.isSymbolicLink(root)) throw new IOException("Unsafe sandbox path");
-        Files.createDirectories(root);
-        Path directory = root.resolve(hash);
+        Path directory = extractionRoot.resolve(hash);
         if (Files.isSymbolicLink(directory)) throw new IOException("Unsafe sandbox path");
         Files.createDirectories(directory);
         Path target = directory.resolve(name);
         if (Files.isSymbolicLink(target)) throw new IOException("Unsafe sandbox path");
         if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             if (bytes == null) bytes = bundledBytes(key);
-            if (bytes.length != bundled.size() || !hash(bytes).equals(hash))
-                throw new IOException("Bundled sandbox changed");
             Path temporary = Files.createTempFile(directory, "helper-", ".tmp");
             try {
                 Files.write(temporary, bytes);
@@ -547,8 +461,8 @@ final class IsolatedDecoder {
             }
         }
         // The cached hash comes from the JAR; check the extracted file on every launch.
-        if (Files.size(target) != bundled.size() || !hash(target).equals(hash))
-            throw new IOException("Sandbox verification failed");
+        if (Files.size(target) != bundled.size()
+                || !hash(Files.readAllBytes(target)).equals(hash)) throw new IOException("Sandbox verification failed");
         if (!windows)
             Files.setPosixFilePermissions(
                     target,
@@ -567,22 +481,6 @@ final class IsolatedDecoder {
             byte[] bytes = input.readNBytes(32 * 1024 * 1024 + 1);
             if (bytes.length > 32 * 1024 * 1024) throw new IOException("Invalid sandbox resource");
             return bytes;
-        }
-    }
-
-    private static String hash(Path file) throws IOException {
-        try (var input = Files.newInputStream(file)) {
-            var digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[65536];
-            int read, total = 0;
-            while ((read = input.read(buffer)) != -1) {
-                total += read;
-                if (total > 32 * 1024 * 1024) throw new IOException("Invalid sandbox resource");
-                digest.update(buffer, 0, read);
-            }
-            return HexFormat.of().formatHex(digest.digest());
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IOException(e);
         }
     }
 

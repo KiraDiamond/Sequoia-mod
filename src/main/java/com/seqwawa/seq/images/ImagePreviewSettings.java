@@ -3,8 +3,7 @@ package com.seqwawa.seq.images;
 import com.seqwawa.seq.config.Setting;
 
 public final class ImagePreviewSettings {
-    private static final Setting.BooleanSetting ENABLED =
-            new Setting.BooleanSetting("image_previews", "chat", true);
+    private static final Setting.BooleanSetting ENABLED = new Setting.BooleanSetting("image_previews", "chat", true);
 
     static {
         ENABLED.setPresentation(

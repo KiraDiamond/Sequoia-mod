@@ -1,8 +1,8 @@
 package com.seqwawa.seq.mixins;
 
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
-import com.seqwawa.seq.integrations.WynntilsChatAccess;
 import com.seqwawa.seq.images.ImagePreviews;
+import com.seqwawa.seq.integrations.WynntilsChatAccess;
 import com.seqwawa.seq.managers.DiscordRankChatDecorator;
 import com.seqwawa.seq.managers.PrivateMessageGuildTagDecorator;
 import com.seqwawa.seq.managers.PrivateMessageGuildTagView;

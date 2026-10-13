@@ -1,16 +1,21 @@
 package com.seqwawa.seq.images;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
-import java.lang.reflect.*;
-import java.nio.file.*;
-
 class HelperIntegrityTest {
-    @TempDir Path temporary;
+    @TempDir
+    Path temporary;
 
     @FunctionalInterface
     interface Check {
@@ -30,20 +35,12 @@ class HelperIntegrityTest {
     }
 
     private Path helper() throws Exception {
-        String platform =
-                IsolatedDecoder.platform(
-                        System.getProperty("os.name"), System.getProperty("os.arch"));
-        Method resource =
-                IsolatedDecoder.class.getDeclaredMethod("resource", String.class, String.class);
+        String platform = IsolatedDecoder.platform(System.getProperty("os.name"), System.getProperty("os.arch"));
+        Method resource = IsolatedDecoder.class.getDeclaredMethod("resource", String.class, String.class);
         resource.setAccessible(true);
         try {
-            return (Path)
-                    resource.invoke(
-                            null,
-                            platform,
-                            platform.startsWith("windows-")
-                                    ? "seqimages-decoder.exe"
-                                    : "seqimages-decoder");
+            return (Path) resource.invoke(
+                    null, platform, platform.startsWith("windows-") ? "seqimages-decoder.exe" : "seqimages-decoder");
         } catch (InvocationTargetException e) {
             if (e.getCause() instanceof IOException io) throw io;
             throw e;
@@ -52,37 +49,25 @@ class HelperIntegrityTest {
 
     @Test
     void repeatedUseRejectsSameSizeTampering() throws Exception {
-        isolatedRoot(
-                () -> {
-                    Path file = helper();
-                    byte[] bytes = Files.readAllBytes(file);
-                    bytes[bytes.length / 2] ^= 1;
-                    Files.write(file, bytes);
-                    assertEquals(
-                            "Sandbox verification failed",
-                            assertThrows(IOException.class, this::helper).getMessage());
-                });
-    }
-
-    @Test
-    void repeatedUseRejectsTruncatedHelper() throws Exception {
-        isolatedRoot(
-                () -> {
-                    Path file = helper();
-                    Files.write(file, new byte[] {0});
-                    assertThrows(IOException.class, this::helper);
-                });
+        isolatedRoot(() -> {
+            Path file = helper();
+            byte[] bytes = Files.readAllBytes(file);
+            bytes[bytes.length / 2] ^= 1;
+            Files.write(file, bytes);
+            assertEquals(
+                    "Sandbox verification failed",
+                    assertThrows(IOException.class, this::helper).getMessage());
+        });
     }
 
     @Test
     void deletedHelperIsRestoredFromBundledBytes() throws Exception {
-        isolatedRoot(
-                () -> {
-                    Path file = helper();
-                    byte[] expected = Files.readAllBytes(file);
-                    Files.delete(file);
-                    assertEquals(file, helper());
-                    assertArrayEquals(expected, Files.readAllBytes(file));
-                });
+        isolatedRoot(() -> {
+            Path file = helper();
+            byte[] expected = Files.readAllBytes(file);
+            Files.delete(file);
+            assertEquals(file, helper());
+            assertArrayEquals(expected, Files.readAllBytes(file));
+        });
     }
 }

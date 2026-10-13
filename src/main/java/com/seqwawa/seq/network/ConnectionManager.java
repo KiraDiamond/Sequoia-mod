@@ -1,7 +1,6 @@
 package com.seqwawa.seq.network;
 
 import com.google.gson.Gson;
-import com.seqwawa.seq.images.BridgeMedia;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.net.URI;
@@ -26,6 +25,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
+import com.seqwawa.seq.images.BridgeMedia;
 import com.seqwawa.seq.model.GuildWarQueueCancellation;
 import com.seqwawa.seq.model.GuildWarQueueSubmission;
 import com.seqwawa.seq.model.WarStatusUpdate;

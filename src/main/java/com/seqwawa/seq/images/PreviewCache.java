@@ -1,10 +1,7 @@
 package com.seqwawa.seq.images;
 
-import net.minecraft.client.gui.GuiGraphics;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import com.seqwawa.seq.client.SeqClient;
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -19,16 +16,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import net.minecraft.client.gui.GuiGraphics;
 
 /**
  * Previews keyed by chat link. Owned by the render thread; workers only download and decode.
  *
- * <p>Three independent budgets bound memory: compressed frames of ready previews, bytes held by
- * loads still in progress (including results waiting for the render thread), and GPU atlases.
- * A finished load's frames move from the in-flight budget to the retained one when the render
- * thread installs them. The preview on screen, the one most recently requested or drawn while
- * used within the last second, is never evicted, so it cannot be dropped and fetched again while
- * visible. Every other preview is evicted, least recently used first, to keep the limits.
+ * <p>Separate budgets bound compressed frames of ready previews, bytes held by loads in progress and
+ * GPU atlases. The preview on screen is never evicted; others go least recently used first.
  */
 final class PreviewCache {
     static final long RETAINED_BYTES = 64L * 1024 * 1024;
@@ -37,24 +31,16 @@ final class PreviewCache {
     static final int MAX_ENTRIES = 32;
     static final long ACTIVE_NANOS = TimeUnit.SECONDS.toNanos(1);
     static final long IDLE_TEXTURE_NANOS = TimeUnit.SECONDS.toNanos(30);
-    private static final Logger LOG = LoggerFactory.getLogger("Sequoia Images");
 
-    /** Downloads and decodes one link on a worker thread. */
+    /** Downloads and decodes one media URL on a worker thread; firstFrame gets frames that can be shown early. */
     @FunctionalInterface
     interface Loader {
-        /**
-         * @param firstFrame receives the animation once its first frame can be shown
-         * @return the completed animation
-         */
         MediaFrames load(
-                URI link,
-                MediaCancellation cancellation,
-                ByteBudget.Lease lease,
-                Consumer<MediaFrames> firstFrame)
+                URI media, MediaCancellation cancellation, ByteBudget.Lease lease, Consumer<MediaFrames> firstFrame)
                 throws Exception;
     }
 
-    /** One link's preview and the resources it owns; each method is one lifecycle transition. */
+    /** One link's preview and the resources it owns. */
     static final class Preview {
         final String key;
         final URI link;
@@ -87,20 +73,6 @@ final class PreviewCache {
             return now - lastUsed < ACTIVE_NANOS;
         }
 
-        private void touch(long now) {
-            lastUsed = now;
-        }
-
-        private void started(FutureTask<Void> work, MediaCancellation workCancellation) {
-            task = work;
-            cancellation = workCancellation;
-        }
-
-        /** Shows frames that are still arriving, unless the load already ended. */
-        private void show(MediaFrames frames) {
-            if (state instanceof PreviewState.Loading) state = new PreviewState.Ready(frames);
-        }
-
         /** @return bytes now charged to the retained budget */
         private long complete(MediaFrames frames) {
             task = null;
@@ -116,11 +88,7 @@ final class PreviewCache {
             return detachPlayer();
         }
 
-        /**
-         * Cancels any work and forgets the media.
-         *
-         * @return retained bytes released
-         */
+        /** Cancels any work and forgets the media; returns the retained bytes released. */
         private long release(ThreadPoolExecutor workers) {
             if (cancellation != null) cancellation.cancel();
             if (task != null) {
@@ -132,10 +100,6 @@ final class PreviewCache {
             long freed = retained;
             retained = 0;
             return freed;
-        }
-
-        private void attach(PreviewPlayer created) {
-            player = created;
         }
 
         private PreviewPlayer detachPlayer() {
@@ -158,12 +122,8 @@ final class PreviewCache {
     private long retainedBytes;
     private long textureBytes;
 
-    /**
-     * @param mainThread runs load results on the render thread
-     * @param clock monotonic nanoseconds; the only time source for activity and expiry
-     */
-    PreviewCache(
-            ThreadPoolExecutor workers, Executor mainThread, Loader loader, LongSupplier clock) {
+    /** {@code mainThread} runs load results on the render thread; {@code clock} is monotonic nanoseconds. */
+    PreviewCache(ThreadPoolExecutor workers, Executor mainThread, Loader loader, LongSupplier clock) {
         this.workers = workers;
         this.mainThread = mainThread;
         this.loader = loader;
@@ -174,7 +134,6 @@ final class PreviewCache {
         return clock.getAsLong();
     }
 
-    /** Returns the preview for {@code link}, starting a load only when none is usable. */
     Preview get(URI link) {
         long now = now();
         String key = link.toString();
@@ -197,7 +156,8 @@ final class PreviewCache {
     private void load(Preview preview) {
         var cancellation = new MediaCancellation();
         var task = new FutureTask<Void>(() -> run(preview, cancellation), null);
-        preview.started(task, cancellation);
+        preview.task = task;
+        preview.cancellation = cancellation;
         try {
             workers.execute(task);
         } catch (RejectedExecutionException busy) {
@@ -207,45 +167,42 @@ final class PreviewCache {
 
     private void run(Preview preview, MediaCancellation cancellation) {
         var lease = inFlight.open();
+        boolean posted = false;
         try {
             MediaFrames frames = null;
-            Exception failure = null;
+            Throwable failure = null;
             try {
                 cancellation.check();
-                frames =
-                        loader.load(
-                                preview.link,
-                                cancellation,
-                                lease,
-                                first -> post(() -> show(preview, cancellation, first)));
+                frames = loader.load(
+                        preview.source,
+                        cancellation,
+                        lease,
+                        first -> post(() -> {
+                            if (!cancellation.isCancelled() && preview.state instanceof PreviewState.Loading)
+                                preview.state = new PreviewState.Ready(first);
+                        }));
                 cancellation.check();
-            } catch (Exception error) {
+            } catch (Exception | Error error) { // An Error must still end the preview, not leave it loading.
                 failure = error;
             }
             // Register before checking cancellation so a concurrent clear() cannot miss the lease.
             postedLeases.add(lease);
-            if (cancellation.isCancelled()) {
-                postedLeases.remove(lease);
-                lease.close();
-                return;
-            }
+            if (cancellation.isCancelled()) return;
             var loaded = frames;
             var error = failure;
             // A posted result stays charged until the render thread installs it, or until the
             // next clear() if the client drops it while disconnecting.
-            if (!post(() -> finish(preview, cancellation, loaded, error, lease))) {
+            posted = post(() -> finish(preview, cancellation, loaded, error, lease));
+        } finally {
+            if (!posted) {
                 postedLeases.remove(lease);
                 lease.close();
             }
-        } catch (RuntimeException | Error unexpected) {
-            postedLeases.remove(lease);
-            lease.close();
-            throw unexpected;
         }
     }
 
     private void use(Preview preview, long now) {
-        preview.touch(now);
+        preview.lastUsed = now;
         shown = preview;
     }
 
@@ -258,16 +215,11 @@ final class PreviewCache {
         }
     }
 
-    /** Starts showing an animation whose remaining frames are still being compressed. */
-    private void show(Preview preview, MediaCancellation cancellation, MediaFrames frames) {
-        if (!cancellation.isCancelled()) preview.show(frames);
-    }
-
     private void finish(
             Preview preview,
             MediaCancellation cancellation,
             MediaFrames frames,
-            Exception error,
+            Throwable error,
             ByteBudget.Lease lease) {
         try {
             // Removing a preview cancels its load, so this also skips evicted previews.
@@ -278,7 +230,7 @@ final class PreviewCache {
                 trim(now);
             } else {
                 retire(preview.fail(PreviewState.failedWith(error, now)));
-                LOG.debug("Image preview failed: {}", preview.status(now), error);
+                SeqClient.LOGGER.debug("[Images] Preview failed: {}", preview.status(now), error);
             }
         } finally {
             postedLeases.remove(lease);
@@ -287,10 +239,8 @@ final class PreviewCache {
     }
 
     /**
-     * Draws a ready preview, creating its atlas on first use.
-     *
-     * @return false if the preview is not ready or just failed. A preview waiting for retired
-     *     atlases to close returns true and draws once the next client tick has closed them.
+     * Draws a ready preview, creating its atlas on first use. Returns false if the preview is not ready or
+     * just failed; one waiting for retired atlases to close returns true and draws after the next tick.
      */
     boolean draw(Preview preview, GuiGraphics graphics, int x, int y, int w, int h) {
         long now = now();
@@ -299,26 +249,24 @@ final class PreviewCache {
         use(preview, now);
         try {
             if (preview.player == null) {
-                if (!makeTextureRoom(preview, PreviewPlayer.atlasFor(frames).bytes())) return true;
-                var player = new PreviewPlayer(frames, now);
-                preview.attach(player);
-                textureBytes += player.textureBytes();
+                var atlas = PreviewPlayer.atlasFor(frames);
+                if (!makeTextureRoom(preview, atlas.bytes())) return true;
+                preview.player = new PreviewPlayer(frames, atlas, now);
+                textureBytes += preview.player.textureBytes();
             }
             preview.player.draw(graphics, x, y, w, h, now);
             return true;
-        } catch (java.io.IOException | RuntimeException failure) {
-            LOG.debug("Image preview could not be displayed", failure);
+        } catch (IOException | RuntimeException failure) {
+            SeqClient.LOGGER.debug("[Images] Preview could not be displayed", failure);
             release(preview);
             return false;
         }
     }
 
     /**
-     * Retires other previews' atlases, least recently drawn first, until {@code bytes} more fit
-     * the texture budget once retired atlases close. They close on the next tick, after this frame
-     * renders, and count against the budget until then.
-     *
-     * @return false if the new atlas must wait for that tick
+     * Retires other previews' atlases, least recently drawn first, until {@code bytes} more fit the texture
+     * budget. Retired atlases close on the next tick and count until then; returns false if the new atlas
+     * must wait for that tick.
      */
     private boolean makeTextureRoom(Preview drawing, long bytes) {
         long closing = 0;
@@ -328,9 +276,7 @@ final class PreviewCache {
             for (var preview : entries.values())
                 if (preview != drawing
                         && preview.player != null
-                        && (oldest == null
-                                || preview.player.lastDrawn() < oldest.player.lastDrawn()))
-                    oldest = preview;
+                        && (oldest == null || preview.player.lastDrawn() < oldest.player.lastDrawn())) oldest = preview;
             if (oldest == null) break;
             closing += oldest.player.textureBytes();
             retire(oldest.detachPlayer());
@@ -345,11 +291,8 @@ final class PreviewCache {
      */
     void maintain() {
         long now = now();
-        closeRetiredPlayers();
         for (var preview : entries.values())
-            if (preview.player != null
-                    && !preview.active(now)
-                    && now - preview.player.lastDrawn() > IDLE_TEXTURE_NANOS)
+            if (preview.player != null && !preview.active(now) && now - preview.player.lastDrawn() > IDLE_TEXTURE_NANOS)
                 retire(preview.detachPlayer());
         trim(now);
         closeRetiredPlayers();
@@ -358,8 +301,7 @@ final class PreviewCache {
     /** Evicts least recently used previews, except the one on screen, until every limit holds. */
     private void trim(long now) {
         Iterator<Preview> eldest = entries.values().iterator();
-        while ((entries.size() > MAX_ENTRIES || retainedBytes > RETAINED_BYTES)
-                && eldest.hasNext()) {
+        while ((entries.size() > MAX_ENTRIES || retainedBytes > RETAINED_BYTES) && eldest.hasNext()) {
             var preview = eldest.next();
             if (preview == shown && preview.active(now)) continue;
             eldest.remove();
@@ -398,11 +340,10 @@ final class PreviewCache {
         closeRetiredPlayers();
         retainedBytes = 0;
         // Results posted but never installed: dropped by a disconnect or now obsolete.
-        postedLeases.removeIf(
-                lease -> {
-                    lease.close();
-                    return true;
-                });
+        postedLeases.removeIf(lease -> {
+            lease.close();
+            return true;
+        });
     }
 
     long retainedBytes() {
