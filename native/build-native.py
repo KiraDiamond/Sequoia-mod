@@ -2,11 +2,13 @@
 
 usage: build-native.py PLATFORM [--guest GUEST.wasm] [--verify-only] [--target TRIPLE]
 
-Precompiles the guest (default native/out/guest/decoder.wasm) for PLATFORM, embeds it in the helper
-and runs the Rust tests. Then it runs the helper: exact pixels for the Klipy fixture, confined before
-any input arrives, malformed input rejected, OS sandbox denials and, on Windows, broker cancellation
-and cleanup. --verify-only repeats those checks on a helper restored from cache. --target overrides
-the Rust target for a local build, for example x86_64-unknown-linux-gnu without a musl C compiler.
+Precompiles native/out/guest/decoder.wasm for PLATFORM, embeds it in the helper and runs the Rust
+tests. Then it runs the helper: exact pixels for the Klipy fixture, confined before any input
+arrives, malformed input rejected, OS sandbox denials and, on Windows, broker cancellation and
+cleanup. --verify-only repeats those checks on a helper restored from cache. --guest builds a helper
+from another guest, such as a modified decoder, and skips the checks, which expect the pinned guest.
+--target overrides the Rust target for a local build, for example x86_64-unknown-linux-gnu without
+a musl C compiler.
 
   native/out/sandbox/PLATFORM/  the files the mod JAR ships
   native/out/PLATFORM/          decoder.cwasm, test probes and validation.json
@@ -29,7 +31,7 @@ EXPECTED_PIXELS = "3566824334c607fe33015d853295d2695c9d399aef88d864f2e9a4d329033
 
 parser = argparse.ArgumentParser()
 parser.add_argument("platform", choices=TARGETS)
-parser.add_argument("--guest", type=pathlib.Path, default=ROOT / "native/out/guest/decoder.wasm")
+parser.add_argument("--guest", type=pathlib.Path)
 parser.add_argument("--verify-only", action="store_true")
 parser.add_argument("--target")
 args = parser.parse_args()
@@ -43,6 +45,7 @@ out = ROOT / "native/out/sandbox" / args.platform
 work = ROOT / "native/out" / args.platform
 helper = out / ("seqimages-decoder.exe" if windows else "seqimages-decoder")
 broker = out / "sandbox.exe"
+guest = (args.guest or ROOT / "native/out/guest/decoder.wasm").resolve()
 env = dict(os.environ, SEQIMAGES_AOT_PATH=str(work / "decoder.cwasm"))
 if windows:
     env["RUSTFLAGS"] = "-C target-feature=+crt-static"
@@ -64,7 +67,7 @@ def build():
         shutil.rmtree(directory, ignore_errors=True)
         directory.mkdir(parents=True)
     run("rustup", "target", "add", target, cwd=CRATE)
-    cargo("run", "--example", "precompile", "--", target, str(args.guest.resolve()), str(work / "decoder.cwasm"))
+    cargo("run", "--example", "precompile", "--", target, str(guest), str(work / "decoder.cwasm"))
     cargo("test", "--all-targets")
     cargo("build", "--bins")
     binaries = CRATE / "target" / target / "release"
@@ -176,10 +179,13 @@ def verify():
 
 if not args.verify_only:
     build()
+if args.guest:
+    print(f"built {helper} from {guest}; the checks run only for the pinned guest")
+    sys.exit()
 verify()
 validation = {
     "platform": args.platform,
-    "guest_sha256": hashlib.sha256(args.guest.read_bytes()).hexdigest(),
+    "guest_sha256": hashlib.sha256(guest.read_bytes()).hexdigest(),
     "executables": {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(out.iterdir())},
 }
 (work / "validation.json").write_text(json.dumps(validation, indent=2) + "\n")

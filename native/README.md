@@ -38,7 +38,8 @@ python3 native/build-native.py linux-x86_64 --guest my.wasm
 ```
 
 and replace `sandbox/PLATFORM/` in the mod JAR with `native/out/sandbox/PLATFORM/`. The mod runs
-whichever helper its JAR contains.
+whichever helper its JAR contains. A helper built from another guest skips the pixel and sandbox
+checks, which expect the pinned guest and the repository's test media.
 
 ## Updating dependencies
 
