@@ -13,6 +13,7 @@ import com.seqwawa.seq.config.Setting;
 import com.seqwawa.seq.model.DiscordRank;
 import com.seqwawa.seq.model.SeqBadgeTier;
 import com.seqwawa.seq.model.RankPresentation;
+import com.seqwawa.seq.network.ConnectionManager;
 import com.seqwawa.seq.utils.ColorRamp;
 import com.seqwawa.seq.utils.ComponentTextEditor;
 import com.seqwawa.seq.utils.RankGradientAnimation;
@@ -1280,6 +1281,61 @@ class DiscordRankChatDecoratorTest {
         assertEquals(
                 DiscordRankChatDecorator.BRIDGE_ICON_GLYPH + " ",
                 DiscordRankChatDecorator.bridgePrefix().getString());
+    }
+
+    @Test
+    void consecutiveRelayedGuildMessagesUseTheBarAndKeepTheirSender() {
+        GuildChatMarkers.reset();
+        DiscordRankChatDecorator.resetChatSequences();
+        try {
+            Component first = ChatManager.guildSenderLine(
+                    new ConnectionManager.GuildChatMessage("First", null, "hello"), "hello", null);
+            assertTrue(first.getString().startsWith("➜ "));
+            DiscordRankChatDecorator.displayGuildLine(first, () -> {});
+            // A delayed display or a world-link rewrite must preserve the sequence and wrapping rail.
+            Component rewritten = first.copy();
+            DiscordRankChatDecorator.retainBridgeRail(first, rewritten);
+            DiscordRankChatDecorator.decorateGuildChat(rewritten);
+            Component next = ChatManager.guildSenderLine(
+                    new ConnectionManager.GuildChatMessage("Second", null, "hi"), "hi", null);
+            assertTrue(next.getString().startsWith("│ "));
+            assertTrue(next.getString().contains("Second: hi"));
+            DiscordRankChatDecorator.displayGuildLine(next, () -> {});
+            assertEquals(DiscordRankChatDecorator.guildPrefix(true).getString(),
+                    DiscordRankChatDecorator.bridgeContinuationPrefixFor(next).getString());
+            Component continuation = ChatManager.guildContinuationLine("another line");
+            DiscordRankChatDecorator.displayGuildLine(continuation, () -> {});
+            assertEquals("│ ", DiscordRankChatDecorator.guildSenderPrefix().getString());
+        } finally {
+            DiscordRankChatDecorator.resetChatSequences();
+            GuildChatMarkers.reset();
+        }
+    }
+
+    @Test
+    void otherChatAndChatClearingRestartTheRelayedGuildPrefix() {
+        GuildChatMarkers.reset();
+        DiscordRankChatDecorator.resetChatSequences();
+        try {
+            Component guild = Component.literal("relayed guild line");
+            DiscordRankChatDecorator.displayGuildLine(guild, () -> {});
+            assertEquals("│ ", DiscordRankChatDecorator.guildSenderPrefix().getString());
+            DiscordRankChatDecorator.decorateGuildChat(Component.literal("ordinary chat"));
+            assertEquals("➜ ", DiscordRankChatDecorator.guildSenderPrefix().getString());
+
+            DiscordRankChatDecorator.displayGuildLine(guild, () -> {});
+            DiscordRankChatDecorator.displayUndecorated(Component.literal("Discord chat"), () -> {});
+            assertEquals("➜ ", DiscordRankChatDecorator.guildSenderPrefix().getString());
+            DiscordRankChatDecorator.displayGuildLine(guild, () -> {});
+            assertEquals(DiscordRankChatDecorator.BRIDGE_ICON_GLYPH + " ",
+                    DiscordRankChatDecorator.bridgePrefix().getString());
+
+            DiscordRankChatDecorator.resetChatSequences();
+            assertEquals("➜ ", DiscordRankChatDecorator.guildSenderPrefix().getString());
+        } finally {
+            DiscordRankChatDecorator.resetChatSequences();
+            GuildChatMarkers.reset();
+        }
     }
 
     /** A bridged line stays railed after world links rebuild the component. */

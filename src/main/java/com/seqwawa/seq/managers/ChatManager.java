@@ -2,6 +2,7 @@ package com.seqwawa.seq.managers;
 
 import com.seqwawa.seq.mixins.ClientPacketListenerMixin;
 import net.minecraft.ChatFormatting;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.regex.Matcher;
@@ -44,7 +46,7 @@ import static com.seqwawa.seq.client.SeqClient.mc;
  * Outgoing: intercepts Wynncraft guild chat, resolves nicknames to real
  * usernames
  * via component insertion tags, and sends to backend.
- * Incoming: listens for Discord chat WS messages, displays in MC chat.
+ * Incoming: displays Discord and forwarded guild chat WS messages in MC chat.
  */
 public class ChatManager {
 
@@ -155,6 +157,38 @@ public class ChatManager {
 
     public ChatManager() {
         registerIncomingHook();
+        ClientSendMessageEvents.ALLOW_COMMAND.register(ChatManager::allowQueueGuildCommand);
+    }
+
+    private static boolean allowQueueGuildCommand(String command) {
+        return allowQueueGuildCommand(command, ServerQueueDetector.isInQueue(), message -> {
+            if (!shouldRelayForLocalGuild()) return false;
+            String username = currentMinecraftUsername();
+            if (username == null) return false;
+            String avatarUrl = "https://mc-heads.net/avatar/"
+                    + URLEncoder.encode(username, StandardCharsets.UTF_8).replace("+", "%20") + "/128";
+            return ConnectionManager.getInstance().sendGuildChat(
+                    username, null, message, avatarUrl, List.of(), true);
+        }, () -> NotificationAccessor.notifyPlayer(
+                "Guild chat message could not be sent."));
+    }
+
+    /** Returns whether the command should continue to Wynncraft; handled queue messages never do. */
+    static boolean allowQueueGuildCommand(
+            String command, boolean inQueue, Predicate<String> sendMessage, Runnable notifyFailure) {
+        String message = queueGuildCommandMessage(command);
+        if (!inQueue || message == null) return true;
+        if (!sendMessage.test(message)) notifyFailure.run();
+        return false;
+    }
+
+    static String queueGuildCommandMessage(String command) {
+        if (command == null || command.length() < 3 || command.charAt(0) != 'g'
+                || !Character.isWhitespace(command.charAt(1))) {
+            return null;
+        }
+        String message = command.substring(2).trim();
+        return message.isBlank() ? null : message;
     }
 
     // ── Outgoing: Wynncraft guild → backend → Discord ──
@@ -758,9 +792,21 @@ public class ChatManager {
         return insertion;
     }
 
-    // ── Incoming: Discord → backend → WS → MC chat ──
+    // ── Incoming: backend → WS → MC chat ──
 
     private void registerIncomingHook() {
+        ConnectionManager.onGuildChat(msg -> mc.execute(() -> {
+            if (mc.player == null) return;
+            // Client-only display bypasses the packet hook that relays server guild chat.
+            RankPresentation rank = DiscordRankChatDecorator.guildRank(msg.username());
+            List<String> lines = splitMessageLines(msg.message());
+            for (int index = 0; index < lines.size(); index++) {
+                MutableComponent line = index == 0
+                        ? guildSenderLine(msg, lines.get(index), rank)
+                        : guildContinuationLine(lines.get(index));
+                DiscordRankChatDecorator.displayGuildLine(line, () -> mc.player.displayClientMessage(line, false));
+            }
+        }));
         ConnectionManager.onDiscordChat(msg -> {
             if (!SeqClient.getShowDiscordChatSetting().getValue())
                 return;
@@ -775,6 +821,41 @@ public class ChatManager {
                 }
             });
         });
+    }
+
+    static MutableComponent guildSenderLine(
+            ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank) {
+        return RankGradientAnimation.batchRegistrations(() -> {
+            MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildSenderPrefix());
+            TextColor textColor = DiscordRankChatDecorator.inGameGuildChatTextColor();
+            if (rank != null) {
+                line.append(DiscordRankChatDecorator.rankPill(rank, null, textColor, msg.username()))
+                        .append(Component.literal(" "));
+            }
+            boolean hasNickname = msg.nickname() != null && !msg.nickname().isBlank();
+            String name = hasNickname ? msg.nickname() : msg.username();
+            Style identity = Style.EMPTY.withColor(ChatFormatting.DARK_AQUA)
+                    .withInsertion(msg.username()).withItalic(hasNickname);
+            if (!name.equals(msg.username())) {
+                identity = identity.withHoverEvent(new HoverEvent.ShowText(
+                        Component.empty()
+                                .append(Component.literal(name + "'s ").withStyle(ChatFormatting.WHITE))
+                                .append(Component.literal("real name is ").withStyle(ChatFormatting.GRAY))
+                                .append(Component.literal(msg.username()).withStyle(ChatFormatting.WHITE))));
+            }
+            line.append(rank == null ? Component.literal(name).withStyle(identity)
+                    : DiscordRankChatDecorator.colouredName(name, rank, identity));
+            MutableComponent insignia = DiscordRankChatDecorator.guildInsignia(msg.username());
+            if (insignia != null) line.append(insignia);
+            return line.append(Component.literal(": ").withStyle(ChatFormatting.DARK_AQUA))
+                    .append(Component.literal(text).withStyle(style -> style.withColor(textColor)));
+        });
+    }
+
+    static MutableComponent guildContinuationLine(String text) {
+        return Component.empty().append(DiscordRankChatDecorator.guildPrefix(true))
+                .append(Component.literal(text).withStyle(style ->
+                        style.withColor(DiscordRankChatDecorator.inGameGuildChatTextColor())));
     }
 
     /**

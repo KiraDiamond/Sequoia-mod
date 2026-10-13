@@ -17,6 +17,7 @@
     "GameRendererMixin",
     "GuiGraphicsMixin",
     "GuildAllianceSnapshotPacketMixin",
+    "GuiTitleAccessor",
     "InGameHudMixin",
     "NameTagFeatureRendererMixin",
     "ParticleEngineMixin",

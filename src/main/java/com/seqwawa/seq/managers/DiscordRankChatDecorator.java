@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.ToIntFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.ChatFormatting;
@@ -128,6 +129,7 @@ public final class DiscordRankChatDecorator {
     private static volatile boolean debug;
     private static boolean suppressed;
     private static boolean bridgeSequenceOpen;
+    private static boolean guildSequenceOpen;
     /** The last line this mod displayed itself, kept so it can be recognised by identity. */
     private static Component lastBridgeLine;
     /** Bridge components and their exact styled rail while Minecraft may still rewrap them. */
@@ -154,9 +156,11 @@ public final class DiscordRankChatDecorator {
         // not, so it is recognised by identity as well as by the suppression flag:
         // another mod may queue the message and deliver it here after
         // displayUndecorated has returned, closing the very block it opened.
-        boolean ownLine = suppressed || message == lastBridgeLine;
+        boolean ownLine = suppressed || message == lastBridgeLine
+                || RECENT_COLORED_BRIDGE_LINES.stream().anyMatch(line -> line.message() == message);
         if (!ownLine) {
             bridgeSequenceOpen = false;
+            guildSequenceOpen = false;
         }
 
         if (message == null || ownLine) {
@@ -768,6 +772,44 @@ public final class DiscordRankChatDecorator {
 
     // ── Discord guild bridge ──
 
+    static RankPresentation guildRank(String username) {
+        return isEnabled() ? DiscordRankService.getInstance().presentationForMinecraftUsername(username) : null;
+    }
+
+    static MutableComponent guildInsignia(String username) {
+        SeqBadgeTier tier = insigniaEnabled() ? insigniaOf(username) : null;
+        return tier == null ? null : insigniaBadge(tier);
+    }
+
+    static MutableComponent guildPrefix(boolean continuation) {
+        GuildChatMarkers.Marker marker = continuation ? GuildChatMarkers.bar() : GuildChatMarkers.arrow();
+        MutableComponent prefix = marker == null
+                ? Component.literal(continuation ? "│ " : "➜ ").withStyle(ChatFormatting.AQUA)
+                : Component.empty().append(Component.literal(marker.glyphs()).withStyle(marker.style()))
+                        .append(continuation ? Component.empty() : Component.literal(" "));
+        return continuation ? alignToGuildColumn(prefix, true) : prefix;
+    }
+
+    /** Uses the guild arrow for a new block, then the bar for consecutive relayed messages. */
+    static MutableComponent guildSenderPrefix() {
+        return guildPrefix(guildSequenceOpen);
+    }
+
+    /** Retains guild wrapping and bypasses re-decoration without opening a Discord block. */
+    static void displayGuildLine(Component line, Runnable display) {
+        rememberColoredBridgeLine(line, guildPrefix(true));
+        displayUndecorated(line, display, false);
+        guildSequenceOpen = true;
+    }
+
+    /** Chat clearing and disconnects must start the next relayed message with a full prefix. */
+    public static void resetChatSequences() {
+        bridgeSequenceOpen = false;
+        guildSequenceOpen = false;
+        lastBridgeLine = null;
+        RECENT_COLORED_BRIDGE_LINES.clear();
+    }
+
     /**
      * Rank of a bridge message sender, or {@code null} when they have none. Callers
      * use it for both the badge and the sender name colour.
@@ -791,7 +833,7 @@ public final class DiscordRankChatDecorator {
                 : SeqClient.getDiscordChatTextColorSetting().getValue());
     }
 
-    private static TextColor inGameGuildChatTextColor() {
+    static TextColor inGameGuildChatTextColor() {
         return TextColor.fromRgb(SeqClient.getInGameGuildChatTextColorSetting() == null
                 ? GUILD_CHAT_COLOR
                 : SeqClient.getInGameGuildChatTextColorSetting().getValue());
@@ -840,28 +882,26 @@ public final class DiscordRankChatDecorator {
      * captured yet — which is what made the alignment come and go.
      */
     private static MutableComponent alignToGuildColumn(MutableComponent prefix) {
+        return alignToGuildColumn(prefix, false);
+    }
+
+    private static MutableComponent alignToGuildColumn(MutableComponent prefix, boolean useFallbackGuildArrow) {
+        if (GuildChatMarkers.arrow() == null && !useFallbackGuildArrow) {
+            return prefix;
+        }
         try {
             Font font = Minecraft.getInstance().font;
-            int target = guildColumnWidth(font);
-            return target < 0 ? prefix : appendAdvance(prefix, target - font.width(prefix));
+            return alignPrefixToReference(prefix, guildPrefix(false), font::width);
         } catch (RuntimeException | LinkageError ignored) {
             // No client available (unit tests); the prefix keeps its natural width.
             return prefix;
         }
     }
 
-    /**
-     * Width of everything Wynncraft draws before a guild badge: its marker plus the
-     * space after it. Negative until a guild line has been seen, since the marker is
-     * captured from real chat rather than redrawn.
-     */
-    private static int guildColumnWidth(Font font) {
-        GuildChatMarkers.Marker marker = GuildChatMarkers.arrow();
-        if (marker == null) {
-            return -1;
-        }
-        return font.width(Component.literal(marker.glyphs()).withStyle(marker.style()))
-                + font.width(Component.literal(" "));
+    /** Shares the same invisible spacing for guild and Discord prefixes, using their rendered font widths. */
+    static MutableComponent alignPrefixToReference(
+            MutableComponent prefix, Component reference, ToIntFunction<Component> width) {
+        return appendAdvance(prefix, width.applyAsInt(reference) - width.applyAsInt(prefix));
     }
 
     /**
@@ -1035,6 +1075,7 @@ public final class DiscordRankChatDecorator {
         try {
             display.run();
             bridgeSequenceOpen = opensBridgeSequence;
+            guildSequenceOpen = false;
         } finally {
             suppressed = false;
         }

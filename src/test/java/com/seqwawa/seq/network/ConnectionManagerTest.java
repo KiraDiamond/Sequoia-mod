@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonParser;
 import com.seqwawa.seq.model.ChatItemPreview;
 import com.seqwawa.seq.model.GuildWarSubmission;
 import com.seqwawa.seq.model.WarStatusUpdate;
@@ -14,9 +15,137 @@ import com.seqwawa.seq.model.WynnClassType;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class ConnectionManagerTest {
+
+    @Test
+    void delayedGuildChatIsDroppedWhenItsSessionExpiresBeforeDelivery() {
+        var received = new java.util.ArrayList<ConnectionManager.GuildChatMessage>();
+        var currentSession = new AtomicBoolean(true);
+        var payload = JsonParser.parseString(
+                "{\"username\":\"Sender\",\"message\":\"hello\",\"should_be_displayed\":true}").getAsJsonObject();
+        ConnectionManager.onGuildChat(received::add);
+        try {
+            Runnable delivery = ConnectionManager.guildChatDelivery(payload, currentSession::get, () -> {
+                throw new AssertionError("Expired sessions must be rejected before reading queue state");
+            });
+            // Simulate a disconnect, socket replacement, or game/account change while waiting on the client thread.
+            currentSession.set(false);
+            delivery.run();
+            assertTrue(received.isEmpty());
+        } finally {
+            ConnectionManager.onGuildChat(null);
+        }
+    }
+
+    @Test
+    void delayedGuildChatUsesQueueStateAtDeliveryForTheCurrentSession() {
+        var received = new java.util.ArrayList<ConnectionManager.GuildChatMessage>();
+        var inQueue = new AtomicBoolean(false);
+        var payload = JsonParser.parseString(
+                "{\"username\":\"Sender\",\"message\":\"hello\",\"should_be_displayed\":false}").getAsJsonObject();
+        ConnectionManager.onGuildChat(received::add);
+        try {
+            Runnable delivery = ConnectionManager.guildChatDelivery(payload, () -> true, inQueue::get);
+            assertTrue(received.isEmpty());
+            inQueue.set(true);
+            delivery.run();
+            assertEquals(List.of(new ConnectionManager.GuildChatMessage("Sender", null, "hello")), received);
+        } finally {
+            ConnectionManager.onGuildChat(null);
+        }
+    }
+
+    private static void dispatchGuildChat(String payload, boolean inQueue) {
+        ConnectionManager.dispatchGuildChat(JsonParser.parseString(payload).getAsJsonObject(), inQueue);
+    }
+
+    @Test
+    void queuePayloadRequestsDisplayAndRetainsExistingValidation() {
+        var payload = ConnectionManager.buildGuildChatPayload(
+                "Sender", null, " hello ", "https://mc-heads.net/avatar/Sender/128", List.of(), true);
+        assertTrue(payload.getAsJsonPrimitive("should_be_displayed").isBoolean());
+        assertTrue(payload.get("should_be_displayed").getAsBoolean());
+        assertEquals("Sender", payload.get("username").getAsString());
+        assertEquals("hello", payload.get("message").getAsString());
+        assertEquals("https://mc-heads.net/avatar/Sender/128", payload.get("avatar_url").getAsString());
+        assertFalse(payload.has("nickname"));
+        assertFalse(payload.has("item_previews"));
+        assertEquals(400, ConnectionManager.buildGuildChatPayload(
+                "Sender", null, "x".repeat(400), null, List.of(), true).get("message").getAsString().length());
+        assertThrows(IllegalArgumentException.class, () -> ConnectionManager.buildGuildChatPayload(
+                "Sender", null, "x".repeat(401), null, List.of(), true));
+        assertThrows(IllegalArgumentException.class, () -> ConnectionManager.buildGuildChatPayload(
+                "Sender", null, " ", null, List.of(), true));
+    }
+
+    @Test
+    void queueDispatchIgnoresDisplayFlagButStillRequiresValidMessageFields() {
+        var received = new java.util.ArrayList<ConnectionManager.GuildChatMessage>();
+        ConnectionManager.onGuildChat(received::add);
+        try {
+            for (String flag : List.of("true", "false", "null", "\"true\"", "1", "{}", "[]")) {
+                String payload = "{\"username\":\"Sender\",\"message\":\"hello\",\"should_be_displayed\":" + flag + "}";
+                received.clear();
+                dispatchGuildChat(payload, true);
+                assertEquals(List.of(new ConnectionManager.GuildChatMessage("Sender", null, "hello")), received, flag);
+                received.clear();
+                dispatchGuildChat(payload, false);
+                assertEquals("true".equals(flag) ? 1 : 0, received.size(), flag);
+            }
+            received.clear();
+            dispatchGuildChat("{\"username\":\"Sender\",\"message\":\"hello\"}", false);
+            assertTrue(received.isEmpty());
+            dispatchGuildChat("{\"username\":\"Sender\",\"message\":\"hello\"}", true);
+            assertEquals(1, received.size());
+            received.clear();
+            for (String payload : List.of("{}", "{\"username\":true,\"message\":\"hello\"}",
+                    "{\"username\":\"Sender\",\"message\":null}", "{\"username\":\"Sender\",\"message\":1}")) {
+                dispatchGuildChat(payload, true);
+            }
+            assertTrue(received.isEmpty());
+        } finally {
+            ConnectionManager.onGuildChat(null);
+        }
+    }
+
+    @Test
+    void outgoingGuildChatRequestsNoDisplayAndPreservesFields() {
+        var payload = ConnectionManager.buildGuildChatPayload("Sender", "Nickname", "hello", "https://example.com", List.of());
+        assertTrue(payload.getAsJsonPrimitive("should_be_displayed").isBoolean());
+        assertFalse(payload.get("should_be_displayed").getAsBoolean());
+        assertEquals("Sender", payload.get("username").getAsString());
+        assertEquals("Nickname", payload.get("nickname").getAsString());
+        assertEquals("hello", payload.get("message").getAsString());
+        assertEquals("https://example.com", payload.get("avatar_url").getAsString());
+    }
+
+    @Test
+    void guildChatOnlyDispatchesExplicitTrueAndValidStrings() {
+        var received = new java.util.ArrayList<ConnectionManager.GuildChatMessage>();
+        ConnectionManager.onGuildChat(received::add);
+        try {
+            for (String flag : List.of("false", "null", "\"true\"", "1", "{}", "[]")) {
+                dispatchGuildChat("{\"type\":\"guild_chat\",\"should_be_displayed\":" + flag + "}", false);
+            }
+            dispatchGuildChat("{\"type\":\"guild_chat\"}", false);
+            for (String fields : List.of("", ",\"username\":true,\"message\":\"hello\"", ",\"username\":\"Sender\",\"message\":null")) {
+                dispatchGuildChat("{\"type\":\"guild_chat\",\"should_be_displayed\":true" + fields + "}", false);
+            }
+            assertTrue(received.isEmpty());
+            String echo = "{\"type\":\"guild_chat\",\"should_be_displayed\":true,\"username\":\"Sender\",\"message\":\"hello\"}";
+            dispatchGuildChat(echo, false);
+            dispatchGuildChat(echo, false);
+            dispatchGuildChat("{\"type\":\"guild_chat\",\"should_be_displayed\":true,\"username\":\"Other\",\"nickname\":\"Nick\",\"message\":\"hi\"}", false);
+            assertEquals(List.of(new ConnectionManager.GuildChatMessage("Sender", null, "hello"),
+                    new ConnectionManager.GuildChatMessage("Sender", null, "hello"),
+                    new ConnectionManager.GuildChatMessage("Other", "Nick", "hi")), received);
+        } finally {
+            ConnectionManager.onGuildChat(null);
+        }
+    }
 
     @Test
     void itemPreviewPayloadIncludesV3Sections() {
