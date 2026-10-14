@@ -116,7 +116,8 @@ class ChatManagerTest {
             assertTrue(WynnPillGlyphs.findPills(line.getString()).isEmpty());
             var identity = ComponentTextEditor.flatten(line).stream().filter(f -> f.text().equals("Nickname")).findFirst().orElseThrow().style();
             assertEquals("RealName", identity.getInsertion());
-            assertTrue(((HoverEvent.ShowText) identity.getHoverEvent()).value().getString().contains("RealName"));
+            assertEquals("RealName's nickname is Nickname",
+                    ((HoverEvent.ShowText) identity.getHoverEvent()).value().getString());
             assertFragmentColor(line, "hello", 0xA1B2C3);
             assertFragmentColor(ChatManager.guildContinuationLine("continued"), "continued", 0xA1B2C3);
         } finally {

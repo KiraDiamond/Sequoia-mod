@@ -839,9 +839,9 @@ public class ChatManager {
             if (!name.equals(msg.username())) {
                 identity = identity.withHoverEvent(new HoverEvent.ShowText(
                         Component.empty()
-                                .append(Component.literal(name + "'s ").withStyle(ChatFormatting.WHITE))
-                                .append(Component.literal("real name is ").withStyle(ChatFormatting.GRAY))
-                                .append(Component.literal(msg.username()).withStyle(ChatFormatting.WHITE))));
+                                .append(Component.literal(msg.username() + "'s ").withStyle(ChatFormatting.WHITE))
+                                .append(Component.literal("nickname is ").withStyle(ChatFormatting.GRAY))
+                                .append(Component.literal(name).withStyle(ChatFormatting.WHITE))));
             }
             line.append(rank == null ? Component.literal(name).withStyle(identity)
                     : DiscordRankChatDecorator.colouredName(name, rank, identity));
