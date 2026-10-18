@@ -261,7 +261,7 @@ public class ChatManager {
         if (!shouldRelayForLocalGuild())
             return;
 
-        ParsedMessage parsed = parseGuildMessage(message);
+        ParsedMessage parsed = parseGuildMessage(message, true);
         if (parsed == null)
             return;
 
@@ -319,6 +319,12 @@ public class ChatManager {
 
         String displayedName = matcher.group(1).trim();
         String realUsername = findRealUsername(message, displayedName);
+        if (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
+            String cachedUsername = NicknameResolverCache.resolveUsername(displayedName);
+            if (cachedUsername != null && cachedUsername.matches("[a-zA-Z0-9_]{3,16}")) {
+                realUsername = cachedUsername;
+            }
+        }
         if (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
             SeqClient.LOGGER.debug(
                     "[NicknameResolver] Chat observe no real username displayed='{}' real='{}' cleaned='{}'",
@@ -386,6 +392,10 @@ public class ChatManager {
      * the component with a valid username insertion to identify the speaker.
      */
     static ParsedMessage parseGuildMessage(Component message) {
+        return parseGuildMessage(message, false);
+    }
+
+    static ParsedMessage parseGuildMessage(Component message, boolean useCachedNickname) {
         String cleaned = PacketTextNormalizer.normalizeForParsing(message == null ? null : message.getString());
         Matcher matcher = CHAT_PATTERN.matcher(cleaned);
 
@@ -407,28 +417,36 @@ public class ChatManager {
         // Search the component tree for the real username. Prefer candidates that
         // differ from the displayed nickname (e.g. nicked/decorated names).
         String realUsername = findRealUsername(message, displayedName);
+        if (useCachedNickname && (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}"))) {
+            realUsername = NicknameResolverCache.resolveUsername(displayedName);
+        }
         String avatarUsername = resolveAvatarUsername(displayedName, realUsername);
-        if (avatarUsername == null) {
+        String senderUsername = avatarUsername == null ? normalizeDisplayNameAsUsername(displayedName) : avatarUsername;
+        if (senderUsername == null) {
             SeqClient.LOGGER.warn(
-                    "[GuildChat] Dropping guild chat: no avatar-safe username displayed='{}' real='{}'",
+                    "[GuildChat] Dropping guild chat: no safe username displayed='{}' real='{}'",
                     displayedName,
                     realUsername);
             return null;
         }
 
-        if (!avatarUsername.equals(displayedName) && realUsername == null) {
+        if (!senderUsername.equals(displayedName) && realUsername == null) {
             SeqClient.LOGGER.debug(
                     "[GuildChat] Using normalized fallback username='{}' from displayed='{}'",
-                    avatarUsername,
+                    senderUsername,
                     displayedName);
         }
 
-        String avatarUrl = "https://mc-heads.net/avatar/"
-                + URLEncoder.encode(avatarUsername, StandardCharsets.UTF_8).replace("+", "%20")
-                + "/128";
-        String nickname = deriveNickname(displayedName, avatarUsername);
-        NicknameResolverCache.remember(displayedName, avatarUsername);
-        return new ParsedMessage(avatarUsername, nickname, content, avatarUrl, itemPreviewResult.previews());
+        String avatarUrl = avatarUsername == null
+                ? null
+                : "https://mc-heads.net/avatar/"
+                        + URLEncoder.encode(avatarUsername, StandardCharsets.UTF_8).replace("+", "%20")
+                        + "/128";
+        String nickname = deriveNickname(displayedName, senderUsername);
+        if (realUsername != null && realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
+            NicknameResolverCache.remember(displayedName, realUsername);
+        }
+        return new ParsedMessage(senderUsername, nickname, content, avatarUrl, itemPreviewResult.previews());
     }
 
     private static String extractRawContent(String rawText) {
@@ -590,6 +608,10 @@ public class ChatManager {
             return displayedName;
         }
 
+        return null;
+    }
+
+    private static String normalizeDisplayNameAsUsername(String displayedName) {
         String normalized = displayedName == null ? "" : displayedName.replaceAll("[^a-zA-Z0-9_]", "");
         if (normalized.matches("[a-zA-Z0-9_]{3,16}")) {
             return normalized;

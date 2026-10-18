@@ -331,6 +331,28 @@ class ChatManagerTest {
     }
 
     @Test
+    void parseGuildMessageUsesObservedNicknameMappingForAvatar() {
+        NicknameResolverCache.remember("Cache Lookup Nickname", "RealPlayer");
+
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
+                Component.literal("󏿼󐀆 Cache Lookup Nickname: hello"), true);
+
+        assertNotNull(parsed);
+        assertEquals("RealPlayer", parsed.username());
+        assertEquals("https://mc-heads.net/avatar/RealPlayer/128", parsed.avatarUrl());
+    }
+
+    @Test
+    void parseGuildMessageDoesNotCacheNormalizedNicknameAsRealUsername() {
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
+                Component.literal("󏿼󐀆 NoCache Alias: hello"));
+
+        assertNotNull(parsed);
+        assertNull(parsed.avatarUrl());
+        assertNull(NicknameResolverCache.resolveUsername("NoCache Alias"));
+    }
+
+    @Test
     void parseGuildMessageIgnoresGuildSystemMessagesWithoutSpeakerColon() {
         assertNull(ChatManager.parseGuildMessage(Component.literal(
                 "󏿼󏿿󏿾 Territory Gelibord is producing more resources than it\n󏿼󐀆 can store!")));
