@@ -296,6 +296,7 @@ public class SeqClient implements ClientModInitializer {
 
     @Getter
     public static Setting.BooleanSetting notifyTrackedWorldEventsSetting;
+    public static Setting.BooleanSetting collectWorldEventLootSetting;
 
     @Getter
     public static Setting.BooleanSetting warPlannerResourceColorsSetting;
@@ -495,6 +496,7 @@ public class SeqClient implements ClientModInitializer {
             WynncraftServerPolicy.Scope previousServerScope = lastServerScope;
             logServerScopeChange(serverScope, currentHost);
             boolean minecraftAccountChanged = handleMinecraftAccountChange();
+            com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().tick(client);
             if (worldEventManager != null) {
                 worldEventManager.tick(
                         client,
@@ -1075,6 +1077,12 @@ public class SeqClient implements ClientModInitializer {
         showPartyHealthBarsSetting = new Setting.BooleanSetting("show_party_healthbars", "raids", true);
         notifyTrackedWorldEventsSetting =
                 new Setting.BooleanSetting("notify_tracked_world_events", "world_events", false);
+        collectWorldEventLootSetting =
+                new Setting.BooleanSetting("collect_world_event_loot", "world_events", true);
+        collectWorldEventLootSetting.setPresentation(
+                "Collect world event rewards",
+                "Share event reward chest contents with Sequoia to measure observed drop rates.",
+                null);
         warPlannerResourceColorsSetting =
                 new Setting.BooleanSetting("resource_colors", "war_planner", false);
         warPlannerShowPlayersSetting =
@@ -1222,6 +1230,7 @@ public class SeqClient implements ClientModInitializer {
         getConfigManager().register(showNametagRanksSetting);
         getConfigManager().register(showPartyHealthBarsSetting);
         getConfigManager().register(notifyTrackedWorldEventsSetting);
+        getConfigManager().register(collectWorldEventLootSetting);
         getConfigManager().register(warPlannerResourceColorsSetting);
         getConfigManager().register(warPlannerShowPlayersSetting);
         getConfigManager().register(warPlannerBackgroundOpacitySetting);

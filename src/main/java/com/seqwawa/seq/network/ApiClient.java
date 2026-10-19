@@ -382,6 +382,10 @@ public class ApiClient {
 
     // ── Princess mode ──
 
+    public CompletableFuture<JsonObject> recordWorldEventLoot(com.seqwawa.seq.loot.WorldEventLootSample sample) {
+        return post("/world-event-loot/samples", gson.toJsonTree(sample).getAsJsonObject(), JsonObject.class);
+    }
+
     public CompletableFuture<PrincessRaidStats> getPrincessRaidLeaderboard() {
         return get("/princess-mode/leaderboard", PrincessRaidStats.class);
     }

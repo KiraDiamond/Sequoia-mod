@@ -61,6 +61,7 @@ public abstract class AbstractContainerScreenMixin<T extends AbstractContainerMe
 
     @Inject(method = "slotClicked", at = @At("HEAD"))
     private void seq$clickWarQueueButton(Slot slot, int i, int j, ClickType clickType, CallbackInfo ci) {
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().freeze(menu.containerId);
         if (clickType != ClickType.PICKUP && clickType != ClickType.SWAP) {
             return;
         }

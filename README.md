@@ -32,6 +32,7 @@ If you are a Sequoia or allied guild member, the expected setup is simple: link 
 - Sequoia achievements: guild-raid completion counts ranked from Bronze to Mythril
 - A playful Princess-mode guild-raid count, compact leaderboard, and numbered raid celebration
 - Interactive world map with gathering nodes analysis and active world events
+- World-event reward chest collection for per-event observed drop rates ([details](docs/world-event-loot.md))
 - Guild-specific settings and status screens
 
 ## Requirements

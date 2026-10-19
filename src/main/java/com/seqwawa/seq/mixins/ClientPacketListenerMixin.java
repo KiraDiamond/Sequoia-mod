@@ -5,6 +5,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
 import net.minecraft.network.protocol.game.ClientboundContainerClosePacket;
 import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
@@ -41,6 +42,8 @@ public class ClientPacketListenerMixin {
                     shift = At.Shift.AFTER),
             cancellable = true)
     private void seq$onHandleOpenScreen(ClientboundOpenScreenPacket packet, CallbackInfo ci) {
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance()
+                .opened(packet.getContainerId(), packet.getTitle(), packet.getType());
         if (MinecraftCharacterClassDetector.getInstance()
                 .onCharacterInfoOpened(packet.getContainerId(), packet.getTitle())) {
             ci.cancel();
@@ -55,6 +58,7 @@ public class ClientPacketListenerMixin {
                     shift = At.Shift.AFTER),
             cancellable = true)
     private void seq$onHandleContainerContent(ClientboundContainerSetContentPacket packet, CallbackInfo ci) {
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().contents(packet.containerId(), packet.items());
         if (MinecraftCharacterClassDetector.getInstance()
                 .onCharacterInfoContents(packet.containerId(), packet.items())) {
             ci.cancel();
@@ -69,9 +73,21 @@ public class ClientPacketListenerMixin {
                     shift = At.Shift.AFTER),
             cancellable = true)
     private void seq$onHandleContainerClose(ClientboundContainerClosePacket packet, CallbackInfo ci) {
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().freeze(packet.getContainerId());
         if (MinecraftCharacterClassDetector.getInstance().onCharacterInfoClosed(packet.getContainerId())) {
             ci.cancel();
         }
+    }
+
+    @Inject(
+            method = "handleContainerSetSlot",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/network/PacketProcessor;)V",
+                    shift = At.Shift.AFTER))
+    private void seq$onEventRewardSlot(ClientboundContainerSetSlotPacket packet, CallbackInfo ci) {
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance()
+                .slot(packet.getContainerId(), packet.getSlot(), packet.getItem());
     }
 
     @Inject(
@@ -94,6 +110,7 @@ public class ClientPacketListenerMixin {
         if (packet.overlay()) return;
 
         Component content = packet.content();
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().onChat(content);
         ChatManager.onSystemChat(content);
         if (SeqClient.getWarTerritoryQueueManager() != null) {
             SeqClient.getWarTerritoryQueueManager().onSystemChat(content);
