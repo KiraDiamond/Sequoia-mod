@@ -3,12 +3,12 @@ package com.seqwawa.seq.loot;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 /** Game-thread state machine. Contents are replacements, never sums or per-slot maxima. */
 public final class WorldEventLootCapture {
     public static final int CAPACITY = 27;
+    private static final long SNAPSHOT_DELAY_MS = 250;
     private static final long REWARD_WINDOW_MS = 5 * 60_000;
     private UUID occurrence;
     private String eventName;
@@ -16,9 +16,8 @@ public final class WorldEventLootCapture {
     private long completedAt;
     private int container = -1;
     private long openedAt;
-    private long changedAt;
     private boolean baseline;
-    private boolean removalBeforeInteraction;
+    private boolean closed;
     private final WorldEventLootSample.Reward[] slots = new WorldEventLootSample.Reward[CAPACITY];
 
     public void completed(String name, String worldName, long now) {
@@ -33,7 +32,11 @@ public final class WorldEventLootCapture {
     }
 
     public void opened(int id, String title, boolean threeRows, long now) {
-        if (container != -1 || occurrence == null || eventName == null) return;
+        if (container != -1) {
+            closed = true; // A replacement screen must not overwrite the pending chest, even with a reused ID.
+            return;
+        }
+        if (occurrence == null || eventName == null) return;
         if (now - completedAt > REWARD_WINDOW_MS || now < completedAt) {
             eventName = null;
             return;
@@ -41,45 +44,42 @@ public final class WorldEventLootCapture {
         if (!threeRows || !"Event Rewards".equals(title)) return;
         container = id;
         openedAt = now;
-        changedAt = now;
+        closed = false;
     }
 
     public boolean accepts(int id) {
-        return container == id && eventName != null;
+        return container >= 0 && container == id && eventName != null && !closed;
     }
 
     public void contents(int id, List<WorldEventLootSample.Reward> contents, long now) {
-        if (!accepts(id)) return;
+        if (!acceptsUpdates(id, now)) return;
         WorldEventLootSample.Reward[] next = new WorldEventLootSample.Reward[CAPACITY];
         for (WorldEventLootSample.Reward reward : contents) next[reward.slot()] = reward;
-        for (int slot = 0; slot < CAPACITY; slot++) replace(slot, next[slot], now);
+        System.arraycopy(next, 0, slots, 0, CAPACITY);
         baseline = true;
     }
 
     public void slot(int id, int slot, WorldEventLootSample.Reward reward, long now) {
-        if (!accepts(id) || slot < 0 || slot >= CAPACITY) return;
-        replace(slot, reward, now);
-    }
-
-    private void replace(int slot, WorldEventLootSample.Reward reward, long now) {
-        WorldEventLootSample.Reward old = slots[slot];
-        if (Objects.equals(old, reward)) return;
-        if (old != null && (reward == null || !old.name().equals(reward.name())
-                || old.quantity() > reward.quantity())) removalBeforeInteraction = true;
+        if (!acceptsUpdates(id, now) || slot < 0 || slot >= CAPACITY) return;
         slots[slot] = reward;
-        changedAt = now;
     }
 
-    /** Freeze before any client click (including player inventory), or on close. */
-    public WorldEventLootSample freeze(int id, long now) {
-        if (!accepts(id)) return null;
+    private boolean acceptsUpdates(int id, long now) {
+        return accepts(id) && now >= openedAt && now - openedAt < SNAPSHOT_DELAY_MS;
+    }
+
+    /** Closing stops packet updates, but preserves the cached contents until the original deadline. */
+    public void closed(int id) {
+        if (container >= 0 && container == id) closed = true;
+    }
+
+    /** Freeze the 250 ms observation once; late ticks cannot include packets after the cutoff. */
+    public WorldEventLootSample snapshot(long now) {
+        if (container < 0 || eventName == null || now - openedAt < SNAPSHOT_DELAY_MS) return null;
         List<WorldEventLootSample.Reward> rewards = new ArrayList<>();
         for (WorldEventLootSample.Reward reward : slots) if (reward != null) rewards.add(reward);
-        // The server has no generation-finished signal. This is explicitly a quiet-snapshot heuristic.
-        boolean complete = baseline && !removalBeforeInteraction && now - openedAt >= 1500
-                && now - changedAt >= 750;
         WorldEventLootSample sample = new WorldEventLootSample(1, occurrence, eventName, world,
-                Instant.ofEpochMilli(completedAt), complete, CAPACITY, null, null, List.copyOf(rewards));
+                Instant.ofEpochMilli(completedAt), baseline, CAPACITY, null, null, List.copyOf(rewards));
         eventName = null; // Consumed: later packets and reopening cannot create another sample.
         container = -1;
         return sample;
@@ -94,7 +94,7 @@ public final class WorldEventLootCapture {
         eventName = null;
         container = -1;
         baseline = false;
-        removalBeforeInteraction = false;
+        closed = false;
         java.util.Arrays.fill(slots, null);
     }
 }

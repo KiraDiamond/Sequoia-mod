@@ -43,18 +43,20 @@ These logs let a live attempt distinguish missing identity from chest detection 
 
 After `Event Completed`, only an exact `Event Rewards` screen with three rows is eligible,
 within five minutes. This title and layout were checked against the Wynntils 4.2.9
-container model. Incoming full-content and slot packets replace the snapshot. The first
-inventory interaction or close freezes it; later updates and reopening cannot replace it.
+container model. The snapshot uses the latest full-content and slot packets received in the
+first **250 ms after opening**. Packets at or after the cutoff cannot alter it, even if the
+next client tick finalizes it later. There is no extra quiet period or click-triggered capture.
+The snapshot is queued automatically once; later updates and reopening cannot replace it.
 The completion UUID is reused for every upload attempt.
 
-There is no server generation-finished marker. `complete=true` is a **quiet-snapshot heuristic**:
-the chest has been open at least 1.5 seconds, a full-content packet has arrived, there have
-been no changes for 750 ms, and no reward removal/replacement was seen before interaction.
-Early interaction, missing baseline, recent updates and unexpected removal yield incomplete
-samples, which the backend retains separately and excludes from rates. An empty quiet
-snapshot remains a sample, including zero-specific-drop chests. Late server generation beyond
-this window could still cause undercounting. Live gameplay verification of packet timing and
-the native entity-label fallback remains necessary; synthetic tests do not establish that.
+Closing the chest or opening a replacement screen early stops updates to that observation,
+while retaining its cached contents until the original deadline. Loot taken during the 250 ms
+window may already be absent from the snapshot. `complete=true` means a full-content baseline
+arrived within the observation window, including an empty baseline. Missing baselines remain
+incomplete and are excluded by the backend. Removals/replacements and recent updates no longer
+invalidate the capture. The game has no generation-finished marker, so rewards generated after
+the cutoff can be missed. Live gameplay verification of packet timing and the native entity-label
+fallback remains necessary; synthetic tests do not establish that.
 
 Full chests are flagged as overflow-risk observations, not proven deletion. Observed rates
 cannot recover rewards already deleted by the game.

@@ -71,14 +71,15 @@ public final class WorldEventLootTracker {
             level = client.level;
         }
         if (client.player == null || client.level == null) return;
-        WorldEventService.getInstance().requestRefresh();
         long now = System.currentTimeMillis();
+        int id = capture.containerId();
+        if (id >= 0 && client.player.containerMenu.containerId != id) capture.closed(id);
+        queue(capture.snapshot(now));
+        WorldEventService.getInstance().requestRefresh();
         if (now >= nextIdentityScan) {
             nextIdentityScan = now + 1000;
             identify(client, now);
         }
-        int id = capture.containerId();
-        if (id >= 0 && client.player.containerMenu.containerId != id) freeze(id);
         upload(client, now);
     }
 
@@ -101,6 +102,7 @@ public final class WorldEventLootTracker {
             String source = identity.source();
             String eventName = identity.complete(now);
             if (eventName != null) {
+                queue(capture.snapshot(now));
                 capture.completed(eventName, WynntilsWorldStateAccess.currentWorldName().orElse(null), now);
                 SeqClient.LOGGER.info("[WorldEventLoot] Completed event={} source={} sessionAgeMs={} lastSeenAgeMs={}",
                         eventName, source, sessionAge, lastSeenAge);
@@ -164,8 +166,9 @@ public final class WorldEventLootTracker {
 
     public void opened(int id, Component title, MenuType<?> type) {
         if (!enabled()) return;
-        if (capture.containerId() >= 0) freeze(capture.containerId());
-        capture.opened(id, clean(title.getString()), type == MenuType.GENERIC_9x3, System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        queue(capture.snapshot(now));
+        capture.opened(id, clean(title.getString()), type == MenuType.GENERIC_9x3, now);
         if ("Event Rewards".equals(clean(title.getString()))) {
             SeqClient.LOGGER.info("[WorldEventLoot] Reward chest opened container={} accepted={} threeRows={}",
                     id, capture.accepts(id), type == MenuType.GENERIC_9x3);
@@ -174,26 +177,32 @@ public final class WorldEventLootTracker {
 
     public void contents(int id, List<ItemStack> items) {
         if (!enabled() || !capture.accepts(id) || items.size() < WorldEventLootCapture.CAPACITY) return;
+        long receivedAt = System.currentTimeMillis();
         List<WorldEventLootSample.Reward> rewards = new ArrayList<>();
         for (int slot = 0; slot < WorldEventLootCapture.CAPACITY; slot++) {
             var reward = reward(slot, items.get(slot));
             if (reward != null) rewards.add(reward);
         }
-        capture.contents(id, rewards, System.currentTimeMillis());
+        capture.contents(id, rewards, receivedAt);
     }
 
     public void slot(int id, int slot, ItemStack stack) {
         if (!enabled() || !capture.accepts(id) || slot < 0 || slot >= WorldEventLootCapture.CAPACITY) return;
-        capture.slot(id, slot, reward(slot, stack), System.currentTimeMillis());
+        long receivedAt = System.currentTimeMillis();
+        capture.slot(id, slot, reward(slot, stack), receivedAt);
     }
 
-    public void freeze(int id) {
+    public void closed(int id) {
         if (!enabled()) return;
-        WorldEventLootSample sample = capture.freeze(id, System.currentTimeMillis());
+        capture.closed(id);
+    }
+
+    private void queue(WorldEventLootSample sample) {
         if (sample == null) return;
         outbox.add(sample);
-        SeqClient.LOGGER.info("[WorldEventLoot] Queued chest event={} sample={} complete={} occupied={}/{}",
-                sample.eventName(), sample.sampleId(), sample.complete(), sample.rewards().size(), sample.capacity());
+        SeqClient.LOGGER.info("[WorldEventLoot] Queued chest event={} sample={} complete={} occupied={}/{} reason={}",
+                sample.eventName(), sample.sampleId(), sample.complete(), sample.rewards().size(), sample.capacity(),
+                sample.complete() ? "captured_250ms_window" : "missing_content_baseline");
     }
 
     private static WorldEventLootSample.Reward reward(int slot, ItemStack stack) {

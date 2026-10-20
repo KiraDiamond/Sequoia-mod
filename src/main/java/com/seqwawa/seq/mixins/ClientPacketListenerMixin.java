@@ -73,7 +73,7 @@ public class ClientPacketListenerMixin {
                     shift = At.Shift.AFTER),
             cancellable = true)
     private void seq$onHandleContainerClose(ClientboundContainerClosePacket packet, CallbackInfo ci) {
-        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().freeze(packet.getContainerId());
+        com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().closed(packet.getContainerId());
         if (MinecraftCharacterClassDetector.getInstance().onCharacterInfoClosed(packet.getContainerId())) {
             ci.cancel();
         }
