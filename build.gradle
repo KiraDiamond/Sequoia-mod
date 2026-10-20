@@ -132,6 +132,9 @@ dependencies {
 
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
+    if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
+        jvmArgs '-XstartOnFirstThread'
+    }
 }
 
 processResources {
