@@ -11,11 +11,15 @@ public record SeqBadge(SeqBadgeType type, SeqBadgeTier tier) {
         if (type == null || tier == null) {
             throw new IllegalArgumentException("Badge type and tier are required.");
         }
+        if ((type == SeqBadgeType.TCC) != (tier == SeqBadgeTier.SINGLE)) {
+            throw new IllegalArgumentException("TCC is untiered; other badges require a metal tier.");
+        }
     }
 
     public Identifier textureId() {
         return Identifier.fromNamespaceAndPath(
-                "seq", "textures/badges/" + type.commandName() + "_" + tier.commandName() + ".png");
+                "seq", "textures/badges/" + type.commandName()
+                        + (type == SeqBadgeType.TCC ? "" : "_" + tier.commandName()) + ".png");
     }
 
     public static List<SeqBadge> sortForRender(Collection<SeqBadge> badges) {
@@ -35,7 +39,10 @@ public record SeqBadge(SeqBadgeType type, SeqBadgeTier tier) {
                 continue;
             }
             SeqBadgeTier tier = SeqBadgeTier.parse(value.substring(prefix.length()));
-            return tier == null ? null : new SeqBadge(type, tier);
+            if (tier == null || (type == SeqBadgeType.TCC) != (tier == SeqBadgeTier.SINGLE)) {
+                return null;
+            }
+            return new SeqBadge(type, tier);
         }
         return null;
     }

@@ -5,6 +5,7 @@ import java.util.Locale;
 public enum SeqBadgeType {
     WTP("wtp", 0),
     NOL("nol", 0),
+    TCC("tcc", 0),
     INSIGNIA("insignia", 1);
 
     private final String commandName;

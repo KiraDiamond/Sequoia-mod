@@ -174,7 +174,7 @@ public final class LeaderboardBadgeService {
                     continue;
                 }
                 SeqBadgeType type = SeqBadgeType.parse(award.series());
-                if (type != SeqBadgeType.WTP && type != SeqBadgeType.NOL) {
+                if (type != SeqBadgeType.WTP && type != SeqBadgeType.NOL && type != SeqBadgeType.TCC) {
                     continue;
                 }
                 addDefinition(definitions, award.key(), type, award.tier());
@@ -185,7 +185,15 @@ public final class LeaderboardBadgeService {
 
     private static void addDefinition(
             Map<String, SeqBadge> definitions, String key, SeqBadgeType type, String tierValue) {
-        SeqBadgeTier tier = SeqBadgeTier.parse(tierValue);
+        if (type == SeqBadgeType.TCC && tierValue != null) {
+            return;
+        }
+        SeqBadgeTier tier = type == SeqBadgeType.TCC
+                ? SeqBadgeTier.SINGLE
+                : SeqBadgeTier.parse(tierValue);
+        if ((type == SeqBadgeType.TCC) != (tier == SeqBadgeTier.SINGLE)) {
+            return;
+        }
         if (key != null && !key.isBlank() && type != null && tier != null) {
             definitions.put(key, new SeqBadge(type, tier));
         }

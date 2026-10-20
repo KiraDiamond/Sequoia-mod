@@ -35,7 +35,10 @@ class SeqBadgeNametagRenderSupportTest {
                     SeqBadgeNametagRenderSupport.visibleBadges(List.of(
                             new SeqBadge(SeqBadgeType.WTP, SeqBadgeTier.GOLD),
                             new SeqBadge(SeqBadgeType.NOL, SeqBadgeTier.SILVER),
+                            new SeqBadge(SeqBadgeType.TCC, SeqBadgeTier.SINGLE),
                             new SeqBadge(SeqBadgeType.INSIGNIA, SeqBadgeTier.DIAMOND))));
+            SeqClient.showRaidBadgesSetting = new Setting.BooleanSetting("show_raid_badges", "leaderboard_badges", true);
+            assertEquals(true, SeqBadgeNametagRenderSupport.isBadgeTypeVisible(SeqBadgeType.TCC));
         } finally {
             SeqClient.showRaidBadgesSetting = previousRaidSetting;
             SeqClient.showInsigniaBadgesSetting = previousInsigniaSetting;
