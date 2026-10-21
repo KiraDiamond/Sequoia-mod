@@ -12,7 +12,7 @@ ordinary guild-member REST policy.
 - Item slot, raw and normalized display name, quantity, normalized lore and category, including unknown items.
 - Capture completeness and chest occupancy. Loot bonus and loot quality remain `null` (unknown).
 
-Event-specific categories are `unidentified_item`, `ingredient`, and `liquid_emerald`.
+Event-specific categories are `unidentified_item`, `event_item`, `rune`, `ingredient`, and `liquid_emerald`.
 General categories are `emerald`, `emerald_block`, `unidentified_box`, and `potion`.
 Unrecognized rewards are retained as `other`. Generic unidentified equipment boxes are
 potion-backed items with a level-range lore line; they are not named unidentified equipment.
@@ -22,6 +22,12 @@ Ingredients use the legacy `Crafting Ingredient` line or the modern pair of a `C
 line and `Can be used in recipes for` line. The modern graphical ingredient badge and level
 digits may disappear during normalization; neither name color nor description keywords alone
 are used to infer an ingredient.
+Runes are recognized by the exact names Nii Rune, Uth Rune, Tol Rune, Az Rune and Ek Rune,
+ignoring case; graphical resource badges are not required. Identified event rewards include
+Third Clarion and Corrupted Cache. Additional named rewards are recognized by complete paired
+tooltip lines: a rarity plus `Utility Trinket` with `Right-Click to use`, or a rarity plus `Item`
+with `Right-Click to open`. A type label or descriptive mention alone does not qualify.
+Known currency, ingredients, generic unidentified boxes and potions keep their classification.
 
 ## Capture rule, version 1
 
@@ -62,6 +68,10 @@ Full chests are flagged as overflow-risk observations, not proven deletion. Obse
 cannot recover rewards already deleted by the game.
 
 ## Delivery
+
+Deploy backend support for `rune` and `event_item` before distributing this mod version.
+An older backend rejects unknown categories and the mod discards permanent 4xx responses.
+The updated backend can also recognize matching `other` observations from older mods.
 
 The bounded in-memory queue retries the same payload every 30 seconds on transport/server,
 authentication and rate-limit errors. Permanent 4xx errors discard the sample. The queue

@@ -7,6 +7,53 @@ import org.junit.jupiter.api.Test;
 
 class WorldEventRewardClassifierTest {
     @Test
+    void recognizesAllFiveRuneNamesWithoutDependingOnTheGraphicalBadge() {
+        for (String type : List.of("Nii", "Uth", "Tol", "Az", "Ek")) {
+            assertEquals("rune", WorldEventRewardClassifier.category(type + " Rune", List.of(
+                    "Use this item to enter Raids", "or craft a Corrupted Dungeon", "key"), false));
+            assertEquals("rune", WorldEventRewardClassifier.category(type.toLowerCase() + " rune", List.of(), true));
+        }
+        assertEquals("other", WorldEventRewardClassifier.category("Unknown Rune", List.of(), false));
+        assertEquals("other", WorldEventRewardClassifier.category("Uth Runes", List.of(), false));
+        assertEquals("other", WorldEventRewardClassifier.category("Fragment", List.of("Find an Uth Rune"), false));
+    }
+
+    @Test
+    void recognizesScreenshotItemsAndOtherPairedIdentifiedTooltipsBeforeUnidentifiedFlavorText() {
+        assertEquals("event_item", WorldEventRewardClassifier.category("Third Clarion", List.of(
+                "Right-Click to use", "Effect:", "- Effect: Fire Resistance", "- Duration: 1 minute",
+                "- Cooldown: 3 minutes", "Fabled Utility Trinket"), false));
+        assertEquals("event_item", WorldEventRewardClassifier.category("Corrupted Cache", List.of(
+                "Right-Click to open", "When opened, grants 1 of 5", "exclusive Mythics", "Mythic Item", "Untradable"), false));
+        assertEquals("event_item", WorldEventRewardClassifier.category("Third Clarion", List.of(), true));
+        assertEquals("event_item", WorldEventRewardClassifier.category("Corrupted Cache", List.of(), false));
+        assertEquals("event_item", WorldEventRewardClassifier.category("Another Horn", List.of(
+                "Fabled Utility Trinket", "Right-Click to use", "An unidentified source forged this horn."), false));
+        assertEquals("event_item", WorldEventRewardClassifier.category("Another Cache", List.of(
+                " mythic item ", " right-click to open "), false));
+        assertEquals("rune", WorldEventRewardClassifier.category("Nii Rune", List.of("Unidentified flavor text"), false));
+    }
+
+    @Test
+    void requiresPairedCompleteTypeAndActionLinesAndKeepsGeneralRewardPrecedence() {
+        for (List<String> lore : List.of(
+                List.of("Fabled Utility Trinket"),
+                List.of("Mythic Item"),
+                List.of("Right-Click to open"),
+                List.of("Fabled Utility Trinket", "Right-Click to open"),
+                List.of("Mythic Item", "Right-Click to use"),
+                List.of("This Fabled Utility Trinket is ancient", "Right-Click to use"),
+                List.of("Mythic Item", "You can Right-Click to open this"))) {
+            assertEquals("other", WorldEventRewardClassifier.category("Unknown Reward", lore, false), lore.toString());
+        }
+        List<String> lore = List.of("Fabled Utility Trinket", "Right-Click to use", "96-100 Level Range");
+        assertEquals("emerald", WorldEventRewardClassifier.category("Emerald", lore, false));
+        assertEquals("unidentified_box", WorldEventRewardClassifier.category("Unidentified Boots", lore, true));
+        assertEquals("potion", WorldEventRewardClassifier.category("Potion of Healing", lore, true));
+        assertEquals("ingredient", WorldEventRewardClassifier.category("Third Clarion", List.of("Crafting Ingredient"), false));
+    }
+
+    @Test
     void recognizesModernIngredientWithGlyphBadgeAndCraftingRecipeLore() {
         List<String> lore = List.of("", "\uDB00\uDC26\uE000\uE000\uE000\uDB00\uDC02", "",
                 "14 Crafting Level", "Can be used in recipes for", "Jeweling", "", "Durability -66");

@@ -2,9 +2,13 @@ package com.seqwawa.seq.loot;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /** Conservative vanilla classification; raw names/lore survive when an item is unknown. */
 public final class WorldEventRewardClassifier {
+    private static final Set<String> RUNES = Set.of("nii rune", "uth rune", "tol rune", "az rune", "ek rune");
+    private static final Set<String> NAMED_ITEMS = Set.of("third clarion", "corrupted cache");
+    private static final String RARITY = "(?:Normal|Unique|Rare|Legendary|Fabled|Mythic|Set)";
     private WorldEventRewardClassifier() {}
 
     public static String category(String name, List<String> lore, boolean potionItem) {
@@ -24,6 +28,13 @@ public final class WorldEventRewardClassifier {
         boolean craftingLevel = lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*(?:[0-9]+[ \\t]+)?Crafting Level[ \\t]*"));
         boolean recipeUsage = lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*Can be used in recipes for[ \\t]*"));
         if (craftingLevel && recipeUsage) return "ingredient";
+        if (RUNES.contains(lower)) return "rune";
+        if (NAMED_ITEMS.contains(lower)) return "event_item";
+        boolean trinket = lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*" + RARITY + " Utility Trinket[ \\t]*"))
+                && lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*Right-Click to use[ \\t]*"));
+        boolean openable = lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*" + RARITY + " Item[ \\t]*"))
+                && lore.stream().anyMatch(line -> line.matches("(?i)[ \\t]*Right-Click to open[ \\t]*"));
+        if (!lower.contains("potion") && !lower.startsWith("unidentified ") && (trinket || openable)) return "event_item";
         // Named unidentified gear uses this prefix in Wynncraft's name, even without an English lore marker.
         // GearBox uses the same icon but was handled above by potion backing + generic name + level range.
         if (rawName.contains("\uE008󐀂")) return "unidentified_item";
