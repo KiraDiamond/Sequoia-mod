@@ -46,7 +46,7 @@ public final class WynnPartyScoreboardReader {
 
     private static List<SidebarLine> readSidebarLineComponents() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null) {
+        if (mc == null || mc.level == null) {
             return List.of();
         }
 
@@ -70,12 +70,21 @@ public final class WynnPartyScoreboardReader {
     }
 
     public static List<PartyHealth> readPartyHealth() {
-        return resolvePartyHealth(readPartyHealthRowsWithoutFallbacks(readSidebarLineComponents(), false));
+        return readPartyHealthRowsWithoutFallbacks(readSidebarLineComponents(), false);
     }
 
     static PartyObservation readPartyObservation() {
-        List<SidebarLine> sidebarLines = readSidebarLineComponents();
-        List<String> wynntilsPartyMembers = wynntilsPartyMembers();
+        return observeParty(readSidebarLineComponents(), wynntilsPartyMembers());
+    }
+
+    static PartyObservation readPartyObservation(List<Component> lines, List<String> wynntilsPartyMembers) {
+        return observeParty(lines.stream().map(line -> {
+            PacketNameResolver resolver = PacketNameResolver.from(line);
+            return new SidebarLine(resolver.text(), resolver);
+        }).toList(), wynntilsPartyMembers);
+    }
+
+    private static PartyObservation observeParty(List<SidebarLine> sidebarLines, List<String> wynntilsPartyMembers) {
         boolean partySidebarActive = sidebarLines.stream()
                 .map(SidebarLine::text)
                 .map(String::trim)
@@ -84,23 +93,12 @@ public final class WynnPartyScoreboardReader {
                 .map(SidebarLine::text)
                 .map(String::trim)
                 .anyMatch(WynnPartyScoreboardReader::isRaidHeaderLine);
-        List<PartyHealth> partyHealth = resolvePartyHealth(
-                readPartyHealthRowsWithoutFallbacks(sidebarLines, true), wynntilsPartyMembers);
+        List<PartyHealth> partyHealth = readPartyHealthRowsWithoutFallbacks(sidebarLines, true);
         return new PartyObservation(
                 partyHealth,
                 matchingWynntilsPartyRoster(partyHealth, wynntilsPartyMembers),
                 partySidebarActive,
                 raidSidebarActive);
-    }
-
-    private static List<PartyHealth> resolvePartyHealth(List<PartyHealth> partyHealth) {
-        return resolvePartyHealth(partyHealth, wynntilsPartyMembers());
-    }
-
-    private static List<PartyHealth> resolvePartyHealth(
-            List<PartyHealth> partyHealth, List<String> wynntilsPartyMembers) {
-        return withLocalUsernameForSoloUnresolvedPartyMember(
-                withWynntilsPartyMembersForUnresolvedRows(partyHealth, wynntilsPartyMembers));
     }
 
     private static List<PartyHealth> readPartyHealthRowsWithoutFallbacks(
@@ -217,49 +215,9 @@ public final class WynnPartyScoreboardReader {
         return partyHealth;
     }
 
-    private static List<PartyHealth> withWynntilsPartyMembersForUnresolvedRows(
-            List<PartyHealth> partyHealth, List<String> wynntilsPartyMembers) {
-        List<String> selectedMembers = matchingWynntilsPartyMemberCandidate(partyHealth, wynntilsPartyMembers);
-        if (selectedMembers.isEmpty()) {
-            return partyHealth;
-        }
-
-        List<PartyHealth> resolved = new ArrayList<>(partyHealth.size());
-        boolean changed = false;
-        for (int index = 0; index < partyHealth.size(); index++) {
-            PartyHealth member = partyHealth.get(index);
-            String username = validUsername(selectedMembers.get(index));
-            if ((member.username() == null || member.username().isBlank()) && username != null) {
-                SeqClient.LOGGER.debug(
-                        "[WynnPartyScoreboard] Wynntils party model resolved nickname='{}' username='{}'",
-                        member.nickname(),
-                        username);
-                NicknameResolverCache.remember(member.nickname(), username);
-                resolved.add(withUsername(member, username));
-                changed = true;
-            } else {
-                resolved.add(member);
-            }
-        }
-        return changed ? List.copyOf(resolved) : partyHealth;
-    }
-
-    private static List<String> matchingWynntilsPartyMemberCandidate(
-            List<PartyHealth> partyHealth,
-            List<String> wynntilsPartyMembers) {
-        if (partyHealth.isEmpty() || wynntilsPartyMembers.isEmpty()) {
-            return List.of();
-        }
-
-        List<List<String>> candidates = wynntilsPartyMemberCandidates(wynntilsPartyMembers);
-        for (List<String> candidate : candidates) {
-            if (candidate.size() == partyHealth.size() && existingUsernamesMatch(partyHealth, candidate)) {
-                return candidate;
-            }
-        }
-        return List.of();
-    }
-
+    // The party model supplies a canonical roster, not identities for sidebar rows.
+    // Its order can differ from the sidebar, and a single unresolved row may be a
+    // different player from the local account. Never turn those guesses into aliases.
     static List<String> matchingWynntilsPartyRoster(
             List<PartyHealth> partyHealth, List<String> wynntilsPartyMembers) {
         if (partyHealth.isEmpty() || wynntilsPartyMembers.isEmpty()) {
@@ -304,16 +262,6 @@ public final class WynnPartyScoreboardReader {
         return List.copyOf(candidates);
     }
 
-    private static boolean existingUsernamesMatch(List<PartyHealth> partyHealth, List<String> candidate) {
-        for (int index = 0; index < partyHealth.size(); index++) {
-            String username = partyHealth.get(index).username();
-            if (username != null && !username.isBlank() && !username.equalsIgnoreCase(candidate.get(index))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private static boolean containsIgnoreCase(List<String> values, String value) {
         for (String candidate : values) {
             if (candidate.equalsIgnoreCase(value)) {
@@ -323,39 +271,6 @@ public final class WynnPartyScoreboardReader {
         return false;
     }
 
-    private static List<PartyHealth> withLocalUsernameForSoloUnresolvedPartyMember(List<PartyHealth> partyHealth) {
-        if (partyHealth.size() != 1) {
-            return partyHealth;
-        }
-
-        PartyHealth member = partyHealth.getFirst();
-        if (member.username() != null && !member.username().isBlank()) {
-            return partyHealth;
-        }
-
-        String localUsername = localUsername();
-        if (localUsername == null) {
-            return partyHealth;
-        }
-
-        SeqClient.LOGGER.debug(
-                "[WynnPartyScoreboard] Resolved solo unresolved party nickname='{}' as local username='{}'",
-                member.nickname(),
-                localUsername);
-        NicknameResolverCache.remember(member.nickname(), localUsername);
-        return List.of(withUsername(member, localUsername));
-    }
-
-    private static PartyHealth withUsername(PartyHealth member, String username) {
-        return new PartyHealth(
-                member.nickname(),
-                username,
-                member.hp(),
-                member.level(),
-                member.online(),
-                member.alive(),
-                member.fullHealthBar());
-    }
 
     private static List<String> wynntilsPartyMembers() {
         try {
@@ -536,7 +451,7 @@ public final class WynnPartyScoreboardReader {
         }
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null) {
+        if (mc == null || mc.level == null) {
             return null;
         }
 

@@ -5,9 +5,42 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.List;
+import net.minecraft.network.chat.Component;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class WynnPartyScoreboardReaderTest {
+    @BeforeEach
+    @AfterEach
+    void clearNicknameCache() {
+        NicknameResolverCache.reset();
+    }
+
+    @Test
+    void swappedUnresolvedRowsKeepCanonicalRosterWithoutInventingPlayerAliases() {
+        var observation = WynnPartyScoreboardReader.readPartyObservation(
+                List.of(Component.literal("Party:"), Component.literal("100 IChooseThou [106]"),
+                        Component.literal("100 Yearnm [106]")),
+                List.of("Yearnm", "IChooseThou"));
+
+        assertEquals(2, observation.members().size());
+        observation.members().forEach(member -> assertNull(member.username()));
+        assertEquals(List.of("Yearnm", "IChooseThou"), observation.canonicalRosterUsernames());
+        assertNull(NicknameResolverCache.resolveUsername("IChooseThou"));
+        assertNull(NicknameResolverCache.resolveUsername("Yearnm"));
+    }
+
+    @Test
+    void singleUnresolvedRowDoesNotBecomeTheLocalOrFirstPartyMember() {
+        var observation = WynnPartyScoreboardReader.readPartyObservation(
+                List.of(Component.literal("Party:"), Component.literal("100 IChooseThou [106]")),
+                List.of("Yearnm"));
+
+        assertNull(observation.members().getFirst().username());
+        assertNull(NicknameResolverCache.resolveUsername("IChooseThou"));
+    }
+
     @Test
     void rejectsOnlineRowsOutsidePartySection() {
         assertNull(WynnPartyScoreboardReader.parsePartyLine("120 RaidMember [106]", false));

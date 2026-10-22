@@ -45,6 +45,8 @@ import com.seqwawa.seq.managers.IngredientGuideManager;
 import com.seqwawa.seq.managers.LeaderboardBadgeService;
 import com.seqwawa.seq.managers.MinecraftWarTowerTracker;
 import com.seqwawa.seq.managers.RankProfileRoster;
+import com.seqwawa.seq.managers.SequoiaGuildMembership;
+import com.seqwawa.seq.managers.NicknameResolverCache;
 import com.seqwawa.seq.managers.PartyHealthCache;
 import com.seqwawa.seq.managers.PartyFinderManager;
 import com.seqwawa.seq.managers.PrincessMode;
@@ -495,6 +497,11 @@ public class SeqClient implements ClientModInitializer {
             String currentHost = WynncraftServerPolicy.currentNormalizedHost();
             WynncraftServerPolicy.Scope previousServerScope = lastServerScope;
             logServerScopeChange(serverScope, currentHost);
+            if (previousServerScope == WynncraftServerPolicy.Scope.MAIN
+                    && serverScope != WynncraftServerPolicy.Scope.MAIN) {
+                SequoiaGuildMembership.getInstance().reset();
+                NicknameResolverCache.reset();
+            }
             boolean minecraftAccountChanged = handleMinecraftAccountChange();
             com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().tick(client);
             if (worldEventManager != null) {
@@ -572,6 +579,9 @@ public class SeqClient implements ClientModInitializer {
             }
             // One poll feeds both the badge and the rank indexes.
             RankProfileRoster.getInstance().tick();
+            if (showDiscordRanksSetting != null && showDiscordRanksSetting.getValue()) {
+                SequoiaGuildMembership.getInstance().tick();
+            }
             if (seqBadgeNametagRenderer != null) {
                 seqBadgeNametagRenderer.tick();
             }
@@ -641,6 +651,8 @@ public class SeqClient implements ClientModInitializer {
         }
         RaidPartySnapshotTracker.reset();
         GuildPresenceManager.getInstance().reset();
+        SequoiaGuildMembership.getInstance().reset();
+        NicknameResolverCache.reset();
         // Its token speaks for the previous account, so a save would land on their profile.
         RaidProfilesSession.getInstance().clear();
         GuildRaidProgressService.getInstance().reset();

@@ -33,6 +33,15 @@ class DiscordRankServiceTest {
             List.of());
 
     @Test
+    void guildChatLookupDoesNotPromoteADiscordNicknameToAVerifiedAccount() {
+        var response = new RankProfilesResponse(1, NICKNAME_CATALOG,
+                List.of(discordOnlyProfile("999", "claimant", "Sapling ClaimedName", "rank.sapling", null)));
+        var service = serviceWith(response);
+        assertNotNull(service.presentationForMinecraftUsername("ClaimedName"));
+        assertNull(service.presentationForVerifiedMinecraftUsername("ClaimedName"));
+    }
+
+    @Test
     void indexesEveryIdentityAMemberCanAppearUnder() {
         RankProfilesResponse response = new RankProfilesResponse(
                 1,

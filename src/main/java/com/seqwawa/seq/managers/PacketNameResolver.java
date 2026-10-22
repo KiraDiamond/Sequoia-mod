@@ -1,8 +1,11 @@
 package com.seqwawa.seq.managers;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
@@ -45,12 +48,12 @@ final class PacketNameResolver {
         }
 
         NameMetadata metadata = metadataForRange(startInclusive, endExclusive);
-        if (metadata.firstHoverRealName() != null) {
-            return metadata.firstHoverRealName();
+        if (!metadata.hoverRealNames().isEmpty()) {
+            return metadata.uniqueHoverRealName();
         }
 
-        if (metadata.firstInsertionName() != null) {
-            return metadata.firstInsertionName();
+        if (!metadata.insertionNames().isEmpty()) {
+            return metadata.uniqueInsertionName();
         }
 
         String displayedUsername = validUsername(trimmed);
@@ -62,11 +65,57 @@ final class PacketNameResolver {
     }
 
     String resolveMetadataUsername(int startInclusive, int endExclusive) {
-        NameMetadata metadata = metadataForRange(startInclusive, endExclusive);
-        if (metadata.firstHoverRealName() != null) {
-            return metadata.firstHoverRealName();
+        return metadataForRange(startInclusive, endExclusive).username();
+    }
+
+    String resolveSpeakerMetadataUsername(String displayedName, int startInclusive, int endExclusive) {
+        return metadataForRange(startInclusive, endExclusive, displayedName).username();
+    }
+
+    boolean hasConflictingMetadata(String displayedName, int startInclusive, int endExclusive) {
+        NameMetadata metadata = metadataForRange(startInclusive, endExclusive, displayedName);
+        return metadata.hoverRealNames().size() > 1
+                || (metadata.hoverRealNames().isEmpty() && metadata.insertionNames().size() > 1);
+    }
+
+    /** Current speaker metadata wins; an old alias must not rename a plain account. */
+    String resolveChatUsername(String displayedName, int startInclusive, int endExclusive, boolean useCache) {
+        NameMetadata metadata = metadataForRange(startInclusive, endExclusive, displayedName);
+        if (!metadata.hoverRealNames().isEmpty() || !metadata.insertionNames().isEmpty()) {
+            return metadata.username();
         }
-        return metadata.firstInsertionName();
+        String displayedUsername = validUsername(displayedName.trim());
+        if (displayedUsername != null && !hasItalic(startInclusive, endExclusive)) {
+            return displayedUsername;
+        }
+        String cached = useCache ? NicknameResolverCache.resolveUsername(displayedName) : null;
+        return cached != null ? cached : displayedUsername;
+    }
+
+    private NameMetadata metadataForRange(int startInclusive, int endExclusive, String displayedName) {
+        Set<String> hoverRealNames = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        Set<String> insertionNames = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        Map<String, Boolean> hoverSubjects = new HashMap<>();
+
+        int cappedStart = Math.max(0, startInclusive);
+        int cappedEnd = Math.min(endExclusive, characters.size());
+        for (int index = cappedStart; index < cappedEnd; index++) {
+            MetaChar character = characters.get(index);
+            if (character.hoverRealName() != null && (displayedName == null
+                    || hoverSubjects.computeIfAbsent(character.hoverText(), text -> ChatManager.hoverBelongsToSpeaker(
+                            text, character.hoverRealName(), displayedName)))) {
+                hoverRealNames.add(character.hoverRealName());
+            }
+            if (character.insertionName() != null) {
+                insertionNames.add(character.insertionName());
+            }
+        }
+
+        return new NameMetadata(List.copyOf(hoverRealNames), List.copyOf(insertionNames));
+    }
+
+    private NameMetadata metadataForRange(int startInclusive, int endExclusive) {
+        return metadataForRange(startInclusive, endExclusive, null);
     }
 
     boolean hasUsernameMetadataThroughout(String username, int startInclusive, int endExclusive) {
@@ -93,25 +142,6 @@ final class PacketNameResolver {
         return foundVisibleCharacter;
     }
 
-    private NameMetadata metadataForRange(int startInclusive, int endExclusive) {
-        LinkedHashSet<String> hoverRealNames = new LinkedHashSet<>();
-        LinkedHashSet<String> insertionNames = new LinkedHashSet<>();
-
-        int cappedStart = Math.max(0, startInclusive);
-        int cappedEnd = Math.min(endExclusive, characters.size());
-        for (int index = cappedStart; index < cappedEnd; index++) {
-            MetaChar character = characters.get(index);
-            if (character.hoverRealName() != null) {
-                hoverRealNames.add(character.hoverRealName());
-            }
-            if (character.insertionName() != null) {
-                insertionNames.add(character.insertionName());
-            }
-        }
-
-        return new NameMetadata(List.copyOf(hoverRealNames), List.copyOf(insertionNames));
-    }
-
     private static void appendNormalizedFragment(List<MetaChar> target, Component fragment) {
         String text = extractFragmentText(fragment);
         if (text.isEmpty()) {
@@ -120,6 +150,7 @@ final class PacketNameResolver {
 
         Style style = fragment.getStyle();
         String hoverRealName = validUsername(ChatManager.extractHoverRealUsername(style));
+        String hoverText = ChatManager.normalizedHoverText(style);
         String insertionName = validUsername(ChatManager.extractInsertionUsername(style));
         Integer baseColor = style.getColor() == null ? null : style.getColor().getValue();
         Integer currentColor = baseColor;
@@ -162,6 +193,7 @@ final class PacketNameResolver {
                     target.add(new MetaChar(
                             ' ',
                             hoverRealName,
+                            hoverText,
                             insertionName,
                             style.isStrikethrough() || legacyStrikethrough,
                             style.isItalic() || legacyItalic,
@@ -176,6 +208,7 @@ final class PacketNameResolver {
                 target.add(new MetaChar(
                         value.charAt(charIndex),
                         hoverRealName,
+                        hoverText,
                         insertionName,
                         style.isStrikethrough() || legacyStrikethrough,
                         style.isItalic() || legacyItalic,
@@ -268,18 +301,22 @@ final class PacketNameResolver {
     private record MetaChar(
             char value,
             String hoverRealName,
+            String hoverText,
             String insertionName,
             boolean strikethrough,
             boolean italic,
             Integer color) {}
 
     private record NameMetadata(List<String> hoverRealNames, List<String> insertionNames) {
-        private String firstHoverRealName() {
-            return hoverRealNames.isEmpty() ? null : hoverRealNames.get(0);
+        private String username() {
+            return hoverRealNames.isEmpty() ? uniqueInsertionName() : uniqueHoverRealName();
+        }
+        private String uniqueHoverRealName() {
+            return hoverRealNames.size() == 1 ? hoverRealNames.get(0) : null;
         }
 
-        private String firstInsertionName() {
-            return insertionNames.isEmpty() ? null : insertionNames.get(0);
+        private String uniqueInsertionName() {
+            return insertionNames.size() == 1 ? insertionNames.get(0) : null;
         }
     }
 }

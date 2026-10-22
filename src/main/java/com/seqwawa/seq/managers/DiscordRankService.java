@@ -106,11 +106,14 @@ public final class DiscordRankService {
      * only when none exists may a unique nickname-derived alias supply the display.
      */
     public RankPresentation presentationForMinecraftUsername(String username) {
-        DiscordRank verified = rankForMinecraftUsername(username);
-        if (verified != null) {
-            return presentation(verified, lookup(index.colorsByMinecraftUsername(), username));
-        }
-        return present(lookup(index.unverifiedMinecraftAliases(), username));
+        RankPresentation verified = presentationForVerifiedMinecraftUsername(username);
+        return verified != null ? verified : present(lookup(index.unverifiedMinecraftAliases(), username));
+    }
+
+    /** Actual game identities only; Discord nickname guesses cannot authorize guild chat decoration. */
+    public RankPresentation presentationForVerifiedMinecraftUsername(String username) {
+        DiscordRank rank = rankForMinecraftUsername(username);
+        return rank == null ? null : presentation(rank, lookup(index.colorsByMinecraftUsername(), username));
     }
 
     /**

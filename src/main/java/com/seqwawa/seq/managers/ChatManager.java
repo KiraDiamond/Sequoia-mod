@@ -119,7 +119,10 @@ public class ChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern LEADING_NICKNAME_USERNAME_PATTERN = Pattern.compile(
             "^(?:<\\d+>\\s*)?([a-zA-Z0-9_][a-zA-Z0-9_ ]*?)\\s*"
-                    + "\\(([a-zA-Z0-9_]{3,16})\\)(?=\\s|:|$)");
+                    // Only a chat speaker or the actor of a resistance notification
+                    // is a name context. System sentences ending in Bank (Everyone)
+                    // must never become nickname mappings, even without that space.
+                    + "\\(([a-zA-Z0-9_]{3,16})\\)(?=\\s*:|\\s+has given you\\b)");
     private static final Pattern DISPLAY_NAME_PATTERN =
             Pattern.compile("[a-zA-Z0-9_][a-zA-Z0-9_ ]{0,63}");
     private static final Duration OUTGOING_DEDUPE_WINDOW = Duration.ofMillis(750);
@@ -295,6 +298,20 @@ public class ChatManager {
             NicknameResolverCache.remember(inlineMatcher.group(1), inlineMatcher.group(2));
         }
 
+        Matcher matcher = CHAT_PATTERN.matcher(cleaned);
+        if (matcher.find()) {
+            String displayedName = matcher.group(1).trim();
+            PacketNameResolver resolver = PacketNameResolver.from(message);
+            NameSpan speaker = nameSpan(resolver, displayedName);
+            String username = speaker == null ? null
+                    : resolver.resolveSpeakerMetadataUsername(displayedName, speaker.start(), speaker.end());
+            if (username != null) {
+                NicknameResolverCache.remember(displayedName, username);
+            }
+            // Body mentions and their hover/insertion metadata are not nickname evidence.
+            return;
+        }
+
         if (message != null) {
             for (Component fragment : message.toFlatList()) {
                 String displayedName = PacketTextNormalizer.normalizeForParsing(fragment.getString()).trim();
@@ -302,44 +319,14 @@ public class ChatManager {
                     continue;
                 }
 
-                String realUsername = extractHoverRealUsername(fragment.getStyle());
-                if (realUsername == null) {
-                    realUsername = extractInsertionUsername(fragment.getStyle());
-                }
+                // A system message can contain other name-like labels (e.g. Bank
+                // (Everyone)). Learn only an explicit reveal naming this fragment.
+                String realUsername = hoverUsernameForDisplay(fragment.getStyle(), displayedName);
                 if (realUsername != null) {
                     NicknameResolverCache.remember(displayedName, realUsername);
                 }
             }
         }
-
-        Matcher matcher = CHAT_PATTERN.matcher(cleaned);
-        if (!matcher.find()) {
-            return;
-        }
-
-        String displayedName = matcher.group(1).trim();
-        String realUsername = findRealUsername(message, displayedName);
-        if (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            String cachedUsername = NicknameResolverCache.resolveUsername(displayedName);
-            if (cachedUsername != null && cachedUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-                realUsername = cachedUsername;
-            }
-        }
-        if (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            SeqClient.LOGGER.debug(
-                    "[NicknameResolver] Chat observe no real username displayed='{}' real='{}' cleaned='{}'",
-                    displayedName,
-                    realUsername,
-                    cleaned);
-            return;
-        }
-
-        SeqClient.LOGGER.debug(
-                "[NicknameResolver] Chat observe displayed='{}' real='{}' cleaned='{}'",
-                displayedName,
-                realUsername,
-                cleaned);
-        NicknameResolverCache.remember(displayedName, realUsername);
     }
 
     private static boolean shouldRelayForLocalGuild() {
@@ -414,12 +401,13 @@ public class ChatManager {
         if (content.isEmpty())
             return null;
 
-        // Search the component tree for the real username. Prefer candidates that
-        // differ from the displayed nickname (e.g. nicked/decorated names).
-        String realUsername = findRealUsername(message, displayedName);
-        if (useCachedNickname && (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}"))) {
-            realUsername = NicknameResolverCache.resolveUsername(displayedName);
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        NameSpan speaker = nameSpan(resolver, displayedName);
+        if (speaker == null || resolver.hasConflictingMetadata(displayedName, speaker.start(), speaker.end())) {
+            return null;
         }
+        String realUsername = resolver.resolveChatUsername(
+                displayedName, speaker.start(), speaker.end(), useCachedNickname);
         String avatarUsername = resolveAvatarUsername(displayedName, realUsername);
         String senderUsername = avatarUsername == null ? normalizeDisplayNameAsUsername(displayedName) : avatarUsername;
         if (senderUsername == null) {
@@ -666,56 +654,21 @@ public class ChatManager {
         }
     }
 
-    private static String findRealUsername(Component component, String displayedName) {
-        List<String> usernames = extractRealUsernames(component);
-        if (usernames.isEmpty()) {
-            return null;
-        }
-
-        if (displayedName == null || displayedName.isBlank()) {
-            return usernames.get(0);
-        }
-
-        String displayedTrimmed = displayedName.trim();
-        String displayedLower = displayedTrimmed.toLowerCase();
-
-        String bestPrefixExpansion = null;
-        for (String candidate : usernames) {
-            if (candidate == null) {
-                continue;
-            }
-            String candidateLower = candidate.toLowerCase();
-            if (candidateLower.equals(displayedLower)) {
-                continue;
-            }
-            if (candidateLower.startsWith(displayedLower)
-                    && candidate.length() > displayedTrimmed.length()
-                    && (bestPrefixExpansion == null || candidate.length() > bestPrefixExpansion.length())) {
-                bestPrefixExpansion = candidate;
-            }
-        }
-        if (bestPrefixExpansion != null) {
-            return bestPrefixExpansion;
-        }
-
-        for (String candidate : usernames) {
-            if (candidate != null && !candidate.equalsIgnoreCase(displayedTrimmed)) {
-                return candidate;
-            }
-        }
-
-        return usernames.get(0);
+    /** Match on the resolver's own text so formatting cleanup cannot shift metadata offsets. */
+    private static NameSpan nameSpan(PacketNameResolver resolver, String displayedName) {
+        if (displayedName == null || displayedName.isBlank()) return null;
+        Matcher name = Pattern.compile(
+                "(?<![a-zA-Z0-9_])" + Pattern.quote(displayedName.trim()) + "(?![a-zA-Z0-9_])",
+                Pattern.CASE_INSENSITIVE).matcher(resolver.text());
+        return name.find() ? new NameSpan(name.start(), name.end()) : null;
     }
 
+    private record NameSpan(int start, int end) {}
+
     static String resolvePacketUsername(Component component, String displayedName) {
-        String realUsername = findRealUsername(component, displayedName);
-        if (realUsername != null && realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            return realUsername;
-        }
-        if (displayedName != null && displayedName.matches("[a-zA-Z0-9_]{3,16}")) {
-            return displayedName;
-        }
-        return null;
+        PacketNameResolver resolver = PacketNameResolver.from(component);
+        NameSpan name = nameSpan(resolver, displayedName);
+        return name == null ? null : resolver.resolveChatUsername(displayedName, name.start(), name.end(), false);
     }
 
     public static List<String> extractRealUsernames(Component component) {
@@ -794,12 +747,47 @@ public class ChatManager {
             return null;
         }
 
-        String hoverText = PacketTextNormalizer.normalizeForParsing(hoverComponent.getString());
+        String hoverText = normalizedHoverText(hoverComponent);
         Matcher matcher = HOVER_REAL_NAME_PATTERN.matcher(hoverText);
         if (!matcher.find()) {
             return null;
         }
         return matcher.group(2) == null ? matcher.group(1) : matcher.group(2);
+    }
+
+    static String extractHoverRealUsername(Style style, String displayedName) {
+        String username = extractHoverRealUsername(style);
+        return username != null && hoverBelongsToSpeaker(normalizedHoverText(style), username, displayedName)
+                ? username : null;
+    }
+
+    private static String normalizedHoverText(Component hover) {
+        return PacketTextNormalizer.normalizeForParsing(hover.getString()).replace('\u2019', '\'').replace('\u2018', '\'');
+    }
+
+    static String normalizedHoverText(Style style) {
+        return style.getHoverEvent() instanceof HoverEvent.ShowText hover ? normalizedHoverText(hover.value()) : null;
+    }
+
+    private static String hoverUsernameForDisplay(Style style, String displayedName) {
+        String username = extractHoverRealUsername(style);
+        return username != null && hoverIdentifiesDisplayName(normalizedHoverText(style), username, displayedName)
+                ? username : null;
+    }
+
+    static boolean hoverIdentifiesDisplayName(String text, String username, String displayedName) {
+        if (text == null) return false;
+        String name = Pattern.quote(displayedName);
+        return Pattern.compile("^" + name + "'(?:s)? real (?:user)?name is\\s+",
+                Pattern.CASE_INSENSITIVE).matcher(text).find()
+                || Pattern.compile("^" + Pattern.quote(username) + "'(?:s)? nickname is\\s+" + name + "$",
+                        Pattern.CASE_INSENSITIVE).matcher(text).find();
+    }
+
+    static boolean hoverBelongsToSpeaker(String text, String username, String displayedName) {
+        // Legacy subjectless reveals remain supported inside a recognized name span.
+        return text != null && (text.matches("(?i)^Real Username:\\s*[a-zA-Z0-9_]{3,16}$")
+                || hoverIdentifiesDisplayName(text, username, displayedName));
     }
 
     static String extractInsertionUsername(Style style) {

@@ -19,7 +19,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -181,7 +183,12 @@ public final class DiscordRankChatDecorator {
             } else {
                 try {
                     decorated = decorateSupportedChat(
-                            message, service::presentationForMinecraftUsername, guildCandidate, partyCandidate);
+                            message,
+                            service::presentationForVerifiedMinecraftUsername,
+                            service::presentationForMinecraftUsername,
+                            guildCandidate,
+                            partyCandidate,
+                            SequoiaGuildMembership.getInstance()::isMember);
                     logInspection(
                             message,
                             decorated == message
@@ -201,10 +208,28 @@ public final class DiscordRankChatDecorator {
             Function<String, RankPresentation> rankLookup,
             boolean guildCandidate,
             boolean partyCandidate) {
+        return decorateSupportedChat(message, rankLookup, rankLookup, guildCandidate, partyCandidate, username -> true);
+    }
+
+    static Component decorateSupportedChat(
+            Component message,
+            Function<String, RankPresentation> guildRankLookup,
+            Function<String, RankPresentation> partyRankLookup,
+            boolean guildCandidate,
+            boolean partyCandidate,
+            Predicate<String> sequoiaMember) {
         if (partyCandidate) {
-            return partyChatColoringEnabled() ? decoratePartyChat(message, rankLookup) : message;
+            return partyChatColoringEnabled() ? decoratePartyChat(message, partyRankLookup) : message;
         }
-        return guildCandidate ? decorateGuildChat(message, rankLookup) : message;
+        return guildCandidate
+                ? decorateGuildChat(message, username -> guildRank(username, guildRankLookup, sequoiaMember))
+                : message;
+    }
+
+    /** Rank alone is insufficient: Discord members and aliases can belong to another game guild. */
+    static RankPresentation guildRank(
+            String username, Function<String, RankPresentation> rankLookup, Predicate<String> sequoiaMember) {
+        return sequoiaMember.test(username) ? rankLookup.apply(username) : null;
     }
 
     /** Party colouring is independently optional beneath general username colouring. */
@@ -648,24 +673,59 @@ public final class DiscordRankChatDecorator {
         }
 
         String displayedName = PacketTextNormalizer.normalizeForParsing(text.substring(pillEnd, colonIndex));
-        for (String candidate : speakerCandidates(fragments, text, pillEnd, colonIndex)) {
-            RankPresentation rank = rankLookup.apply(candidate);
-            if (rank != null) {
-                return new Speaker(
-                        candidate,
-                        rank,
-                        metadataCoversEmbeddedUsername(fragments, pillEnd, colonIndex, candidate));
+        // An explicit account reveal identifies the speaker even when that account
+        // has no eligible rank. Never substitute a ranked nickname or cached party alias.
+        Set<String> realUsernames = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        Matcher revealed = NICKNAME_WITH_USERNAME_PATTERN.matcher(displayedName);
+        if (revealed.find()) {
+            realUsernames.add(revealed.group(1));
+        }
+        int cursor = 0;
+        boolean italicName = false;
+        for (ComponentTextEditor.Fragment fragment : fragments) {
+            int fragmentStart = cursor;
+            cursor += fragment.text().length();
+            if (cursor <= pillEnd || fragmentStart >= colonIndex) {
+                continue;
+            }
+            italicName |= fragment.style().isItalic();
+            String realUsername = ChatManager.extractHoverRealUsername(fragment.style(), displayedName);
+            if (realUsername != null) {
+                realUsernames.add(realUsername);
             }
         }
-
-        String cachedUsername = NicknameResolverCache.resolveUsername(displayedName);
-        if (cachedUsername != null) {
-            RankPresentation cachedRank = rankLookup.apply(cachedUsername);
-            if (cachedRank != null) {
-                return new Speaker(cachedUsername, cachedRank, true);
+        if (!realUsernames.isEmpty()) {
+            if (realUsernames.size() != 1) {
+                return null;
             }
+            String username = realUsernames.iterator().next();
+            RankPresentation rank = rankLookup.apply(username);
+            return rank == null ? null : new Speaker(
+                    username, rank, metadataCoversEmbeddedUsername(fragments, pillEnd, colonIndex, username));
         }
-        return null;
+        String username;
+        if (!italicName && USERNAME_PATTERN.matcher(displayedName.trim()).matches()) {
+            // A plain account name identifies itself, regardless of a conflicting
+            // insertion or an old alias. Eligibility must not select its identity.
+            username = displayedName.trim();
+        } else {
+            username = NicknameResolverCache.resolveUsername(displayedName);
+            if (username != null) {
+                RankPresentation rank = rankLookup.apply(username);
+                return rank == null ? null : new Speaker(username, rank, true);
+            }
+            Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            candidates.addAll(speakerCandidates(fragments, text, pillEnd, colonIndex));
+            // Without an account reveal, two username-shaped slash halves or
+            // conflicting insertion hints cannot safely identify the speaker.
+            if (candidates.size() != 1 || (italicName && candidates.iterator().next().equalsIgnoreCase(displayedName.trim()))) {
+                return null;
+            }
+            username = candidates.iterator().next();
+        }
+        RankPresentation rank = rankLookup.apply(username);
+        return rank == null ? null : new Speaker(
+                username, rank, metadataCoversEmbeddedUsername(fragments, pillEnd, colonIndex, username));
     }
 
     /**
@@ -736,7 +796,7 @@ public final class DiscordRankChatDecorator {
             if (cursor <= regionStart || fragmentStart >= regionEnd) {
                 continue;
             }
-            addUsernameCandidate(candidates, ChatManager.extractHoverRealUsername(fragment.style()));
+            addUsernameCandidate(candidates, ChatManager.extractHoverRealUsername(fragment.style(), displayedName));
             addUsernameCandidate(candidates, ChatManager.extractInsertionUsername(fragment.style()));
         }
 
@@ -747,10 +807,9 @@ public final class DiscordRankChatDecorator {
      * Offers both halves of a {@code username/nickname} name, the format add-ons use to
      * show a nicked player without brackets.
      * <p>
-     * Both sides are offered rather than picking one, because which half is the account
-     * name depends on the add-on and its settings. The roster decides: whichever half
-     * resolves to a member is the speaker, and a nickname that matches nobody costs
-     * only a failed lookup.
+     * Which half is the account depends on the add-on. With no account metadata,
+     * resolution accepts only an unambiguous candidate; eligibility must never
+     * decide which of two possible accounts a line belongs to.
      */
     private static void addSlashSeparatedCandidates(Set<String> candidates, String displayedName) {
         Matcher beforeSlash = USERNAME_BEFORE_SLASH_PATTERN.matcher(displayedName);
@@ -773,11 +832,15 @@ public final class DiscordRankChatDecorator {
     // ── Discord guild bridge ──
 
     static RankPresentation guildRank(String username) {
-        return isEnabled() ? DiscordRankService.getInstance().presentationForMinecraftUsername(username) : null;
+        return isEnabled()
+                ? guildRank(username, DiscordRankService.getInstance()::presentationForVerifiedMinecraftUsername,
+                        SequoiaGuildMembership.getInstance()::isMember)
+                : null;
     }
 
     static MutableComponent guildInsignia(String username) {
-        SeqBadgeTier tier = insigniaEnabled() ? insigniaOf(username) : null;
+        SeqBadgeTier tier = insigniaEnabled() && SequoiaGuildMembership.getInstance().isMember(username)
+                ? insigniaOf(username) : null;
         return tier == null ? null : insigniaBadge(tier);
     }
 

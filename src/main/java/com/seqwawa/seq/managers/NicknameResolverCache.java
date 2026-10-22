@@ -14,6 +14,10 @@ public final class NicknameResolverCache {
 
     private NicknameResolverCache() {}
 
+    public static void reset() {
+        usernameByNickname.clear();
+    }
+
     public static void remember(String nickname, String username) {
         String nicknameKey = normalizeNickname(nickname);
         String safeUsername = normalizeUsername(username);
