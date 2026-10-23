@@ -14,8 +14,13 @@ import com.seqwawa.seq.model.WarTowerUpdate;
 import com.seqwawa.seq.model.WynnClassType;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import org.junit.jupiter.api.Test;
 
 class ConnectionManagerTest {
@@ -622,4 +627,22 @@ class ConnectionManagerTest {
                         .toList()));
     }
 
+    @Test
+    void unlinkedWarningKeepsTheLinkGuidanceAndOffersDismissForThatAccountOnly() {
+        UUID account = UUID.fromString("f1000000-0000-0000-0000-000000000002");
+        String guidance = "No linked Sequoia account was found for this Minecraft account. Use /link with the"
+                + " Sierra bot in Discord, then reconnect.";
+
+        Component message = ConnectionManager.unlinkedAccountMessage(guidance, account);
+
+        assertTrue(message.getString().contains(guidance));
+        var clicks = new java.util.LinkedHashSet<ClickEvent>();
+        message.visit(
+                (style, run) -> {
+                    if (style.getClickEvent() != null) clicks.add(style.getClickEvent());
+                    return Optional.empty();
+                },
+                Style.EMPTY);
+        assertEquals(java.util.Set.of(new ClickEvent.RunCommand("/seq _dismiss-unlinked " + account)), clicks);
+    }
 }

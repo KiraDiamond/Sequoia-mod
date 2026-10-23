@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
@@ -30,8 +31,11 @@ import com.seqwawa.seq.model.GuildWarQueueSubmission;
 import com.seqwawa.seq.model.WarStatusUpdate;
 import com.seqwawa.seq.model.WarTowerUpdate;
 import lombok.Getter;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.exceptions.WebsocketNotConnectedException;
 import org.java_websocket.handshake.ServerHandshake;
@@ -48,11 +52,13 @@ import com.seqwawa.seq.model.GuildWarSubmission;
 import com.seqwawa.seq.model.WynnClassType;
 import com.seqwawa.seq.network.auth.AuthErrorCode;
 import com.seqwawa.seq.network.auth.AuthException;
+import com.seqwawa.seq.network.auth.UnlinkedAccountWarning;
 import com.seqwawa.seq.utils.WynnClassCache;
 
 public class ConnectionManager extends WebSocketClient implements NotificationAccessor {
 
     private static final Gson GSON = new Gson();
+    static final String DISMISS_UNLINKED_COMMAND = "/seq _dismiss-unlinked";
     private static final long RECONNECT_BASE_MS = 1_000;
     private static final long RECONNECT_CAP_MS = 60_000;
     private static final int MAX_AUTO_RECONNECT_ATTEMPTS = 5;
@@ -491,6 +497,34 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
         }
     }
 
+    private void notifyUnlinkedAccount(String message) {
+        UUID profileId = Minecraft.getInstance().getUser().getProfileId();
+        if (profileId == null) {
+            notify(message);
+            return;
+        }
+        if (!UnlinkedAccountWarning.getInstance().shouldShow(profileId, BuildConfig.API_URL, userInitiatedConnectFlow)) {
+            SeqClient.LOGGER.info("[Auth] Not-linked warning hidden for this session");
+            return;
+        }
+        Minecraft.getInstance().execute(() -> {
+            var player = Minecraft.getInstance().player;
+            if (player != null) {
+                player.displayClientMessage(unlinkedAccountMessage(message, profileId), false);
+            }
+        });
+    }
+
+    static Component unlinkedAccountMessage(String message, UUID profileId) {
+        return NotificationAccessor.prefixComponent()
+                .append(Component.literal(message + " ").withStyle(ChatFormatting.GRAY))
+                .append(NotificationAccessor.wynnPill(
+                        "Dismiss",
+                        ChatFormatting.DARK_GRAY,
+                        ChatFormatting.WHITE,
+                        new ClickEvent.RunCommand(DISMISS_UNLINKED_COMMAND + " " + profileId)));
+    }
+
     private void finishConnectFlow() {
         userInitiatedConnectFlow = false;
     }
@@ -634,7 +668,11 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
                                 authException.getStableCode(),
                                 authException.getMessage(),
                                 authException);
-                        notifyConnectionFailure(authException.getMessage(), !authException.isRetryable());
+                        if (UnlinkedAccountWarning.isDismissible(authException.getCode())) {
+                            notifyUnlinkedAccount(authException.getMessage());
+                        } else {
+                            notifyConnectionFailure(authException.getMessage(), !authException.isRetryable());
+                        }
                         finishConnectFlow();
                         if (authException.isRetryable() && autoReconnect) {
                             scheduleReconnect();
@@ -642,6 +680,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
                         return;
                     }
 
+                    UnlinkedAccountWarning.getInstance().reset();
                     try {
                         WynncraftServerPolicy.Scope currentScope = WynncraftServerPolicy.currentScope();
                         if (currentScope != WynncraftServerPolicy.Scope.MAIN) {
@@ -1680,6 +1719,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
 
     public static void resetForAccountChange() {
         pendingGuildWarEvents.clear();
+        UnlinkedAccountWarning.getInstance().reset();
         ConnectionManager current = instance;
         if (current == null) {
             return;
