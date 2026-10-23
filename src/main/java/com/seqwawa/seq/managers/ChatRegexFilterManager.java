@@ -177,14 +177,10 @@ public final class ChatRegexFilterManager {
         }
 
         String displayedName = matcher.group("author");
-        if (CAT_USERNAME.equalsIgnoreCase(displayedName.trim())) {
-            return true;
-        }
-
-        String username = resolver.resolveMetadataUsername(matcher.start("author"), matcher.end("author"));
-        return CAT_USERNAME.equalsIgnoreCase(username)
-                && resolver.hasUsernameMetadataThroughout(
-                        CAT_USERNAME, matcher.start("author"), matcher.end("author"));
+        String username = resolver.resolve(matcher.start("author"), matcher.end("author"),
+                PacketNameResolver.Policy.CHAT, "filter.author").username();
+        return CAT_USERNAME.equalsIgnoreCase(username) && (PacketNameResolver.validUsername(displayedName.trim()) != null
+                || resolver.metadataCovers(username, matcher.start("author"), matcher.end("author")));
     }
 
     private static String normalizeGazReminder(String message) {

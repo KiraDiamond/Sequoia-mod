@@ -20,7 +20,6 @@ import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.config.Setting;
 import com.seqwawa.seq.model.Listing;
 import com.seqwawa.seq.network.ConnectionManager;
-import com.seqwawa.seq.utils.PacketTextNormalizer;
 
 public class WynnPartySyncManager {
 
@@ -62,7 +61,9 @@ public class WynnPartySyncManager {
     private Instant ignoreLateScanResponseUntil = Instant.EPOCH;
 
     public void onSystemChat(Component message) {
-        String normalized = PacketTextNormalizer.normalizeForParsing(message == null ? null : message.getString());
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        String normalized = resolver.text().trim();
+        int offset = resolver.text().indexOf(normalized);
         if (normalized.isBlank()) {
             return;
         }
@@ -93,7 +94,8 @@ public class WynnPartySyncManager {
 
         Matcher joinedMatcher = PARTY_JOINED_PATTERN.matcher(normalized);
         if (joinedMatcher.matches()) {
-            String observedUsername = resolveObservedUsername(message, joinedMatcher.group(1));
+            String observedUsername = resolver.observe(joinedMatcher.start(1) + offset, joinedMatcher.end(1) + offset,
+                    PacketNameResolver.Policy.CHAT, "party.joined").username();
             SeqClient.LOGGER.info(
                     "[WynnPartySync] Detected Wynn party join displayed='{}' resolved='{}'",
                     joinedMatcher.group(1),
@@ -104,7 +106,8 @@ public class WynnPartySyncManager {
 
         Matcher leftMatcher = PARTY_LEFT_PATTERN.matcher(normalized);
         if (leftMatcher.matches()) {
-            String observedUsername = resolveObservedUsername(message, leftMatcher.group(1));
+            String observedUsername = resolver.observe(leftMatcher.start(1) + offset, leftMatcher.end(1) + offset,
+                    PacketNameResolver.Policy.CHAT, "party.left").username();
             SeqClient.LOGGER.info(
                     "[WynnPartySync] Detected Wynn party leave displayed='{}' resolved='{}'",
                     leftMatcher.group(1),
@@ -115,7 +118,8 @@ public class WynnPartySyncManager {
 
         Matcher kickedMatcher = PARTY_KICKED_PATTERN.matcher(normalized);
         if (kickedMatcher.matches()) {
-            String observedUsername = resolveObservedUsername(message, kickedMatcher.group(1));
+            String observedUsername = resolver.observe(kickedMatcher.start(1) + offset, kickedMatcher.end(1) + offset,
+                    PacketNameResolver.Policy.CHAT, "party.kicked").username();
             SeqClient.LOGGER.info(
                     "[WynnPartySync] Detected Wynn party kick displayed='{}' resolved='{}'",
                     kickedMatcher.group(1),
@@ -132,7 +136,8 @@ public class WynnPartySyncManager {
 
         Matcher leaderMatcher = PARTY_LEADER_PATTERN.matcher(normalized);
         if (leaderMatcher.matches()) {
-            String observedUsername = resolveObservedUsername(message, leaderMatcher.group(1));
+            String observedUsername = resolver.observe(leaderMatcher.start(1) + offset, leaderMatcher.end(1) + offset,
+                    PacketNameResolver.Policy.CHAT, "party.leader").username();
             SeqClient.LOGGER.info(
                     "[WynnPartySync] Detected Wynn party leader change displayed='{}' resolved='{}'",
                     leaderMatcher.group(1),
@@ -564,28 +569,6 @@ public class WynnPartySyncManager {
         lastEventKey = normalizedMessage;
         lastEventAt = now;
         return false;
-    }
-
-    private String resolveObservedUsername(Component message, String displayedName) {
-        String trimmed = displayedName == null ? null : displayedName.trim();
-        if (trimmed == null || trimmed.isBlank()) {
-            return null;
-        }
-
-        String resolved = ChatManager.resolvePacketUsername(message, trimmed);
-        if (resolved != null && MC_USERNAME_PATTERN.matcher(resolved).matches()) {
-            NicknameResolverCache.remember(trimmed, resolved);
-            return resolved;
-        }
-
-        if (MC_USERNAME_PATTERN.matcher(trimmed).matches()) {
-            NicknameResolverCache.remember(trimmed, trimmed);
-            return trimmed;
-        }
-        SeqClient.LOGGER.warn(
-                "[WynnPartySync] Could not resolve a valid username from displayed='{}'",
-                displayedName);
-        return null;
     }
 
     private List<String> parseAuthoritativeMembersSnapshot(String rawMembersTail) {

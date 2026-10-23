@@ -10,12 +10,11 @@ import com.seqwawa.seq.utils.PlayerNameCache;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Indexes the Sequoia Discord progression rank of every member, keyed by every
@@ -23,13 +22,11 @@ import java.util.regex.Pattern;
  * for in-game guild chat, and the Discord id, username and display name for
  * messages arriving over the guild bridge.
  * <p>
- * A read-only view over {@link RankProfileRoster}, which owns the single fetch
- * and cache. A Discord-only member can also be matched for display purposes when
- * their nickname follows Sequoia's rank-and-Minecraft-name convention. That
- * unverified fallback is kept separate from authenticated Minecraft identities.
+ * A read-only view over {@link RankProfileRoster}. Game accounts, Discord ids
+ * and legacy display aliases have separate indexes; aliases cannot replace a
+ * supplied account identity.
  */
 public final class DiscordRankService {
-    private static final Pattern MINECRAFT_USERNAME_PATTERN = Pattern.compile("[A-Za-z0-9_]{3,16}");
     private static DiscordRankService instance;
 
     private volatile Index index = Index.empty();
@@ -87,8 +84,8 @@ public final class DiscordRankService {
 
     /** Resolves a bridge sender name against Discord identities, then Minecraft names. */
     public DiscordRank rankForBridgeSender(String senderName) {
-        DiscordRank rank = rankForDiscordIdentity(senderName);
-        return rank != null ? rank : rankForMinecraftUsername(senderName);
+        BridgeIdentity sender = bridgeIdentity(senderName, null);
+        return sender != null ? sender.rank() : ambiguousBridgeName(senderName) ? null : rankForMinecraftUsername(senderName);
     }
 
     /**
@@ -97,23 +94,23 @@ public final class DiscordRankService {
      * can attach the wrong member's rank to a message.
      */
     public DiscordRank rankForBridgeSender(String senderName, String discordId) {
-        DiscordRank byId = rankForDiscordIdentity(discordId);
-        return byId != null ? byId : rankForBridgeSender(senderName);
-    }
-
-    /**
-     * Rank and colours of an in-game speaker. A verified Minecraft username wins;
-     * only when none exists may a unique nickname-derived alias supply the display.
-     */
-    public RankPresentation presentationForMinecraftUsername(String username) {
-        RankPresentation verified = presentationForVerifiedMinecraftUsername(username);
-        return verified != null ? verified : present(lookup(index.unverifiedMinecraftAliases(), username));
+        if (normalizeKey(discordId) == null) return rankForBridgeSender(senderName);
+        BridgeIdentity sender = lookup(index.bridgeById(), discordId);
+        return sender == null ? null : sender.rank();
     }
 
     /** Actual game identities only; Discord nickname guesses cannot authorize guild chat decoration. */
     public RankPresentation presentationForVerifiedMinecraftUsername(String username) {
         DiscordRank rank = rankForMinecraftUsername(username);
         return rank == null ? null : presentation(rank, lookup(index.colorsByMinecraftUsername(), username));
+    }
+
+    public RankPresentation presentationForMinecraftAccount(UUID uuid, String username) {
+        RankPresentation byUuid = presentationForMinecraftUuid(uuid);
+        if (byUuid != null) return byUuid;
+        if (uuid != null && index.knownMinecraftUuids().contains(PlayerNameCache.formatUUID(uuid.toString()))) return null;
+        String linkedUuid = lookup(index.uuidByMinecraftUsername(), username);
+        return uuid != null && linkedUuid != null ? null : presentationForVerifiedMinecraftUsername(username);
     }
 
     /**
@@ -126,12 +123,12 @@ public final class DiscordRankService {
         if (rank == null) {
             return null;
         }
-        return presentation(rank, lookup(index.colorsByIdentity(), PlayerNameCache.formatUUID(uuid.toString())));
+        return presentation(rank, lookup(index.colorsByMinecraftUuid(), PlayerNameCache.formatUUID(uuid.toString())));
     }
 
     /** Rank and colours of a bridge sender, matched on Discord identity then game name. */
     public RankPresentation presentationForBridgeSender(String senderName) {
-        return present(rankForBridgeSender(senderName), senderName);
+        return presentationForBridgeSender(senderName, null);
     }
 
     /**
@@ -140,24 +137,18 @@ public final class DiscordRankService {
      * so an individual palette is found by id too.
      */
     public RankPresentation presentationForBridgeSender(String senderName, String discordId) {
-        DiscordRank rank = rankForBridgeSender(senderName, discordId);
-        if (rank == null) {
-            return null;
-        }
-        return presentation(rank, individualColorsForBridgeSender(senderName, discordId));
+        BridgeIdentity sender = bridgeIdentity(senderName, discordId);
+        if (sender != null) return sender.rank() == null ? null : presentation(sender.rank(), sender.colors());
+        return normalizeKey(discordId) == null && !ambiguousBridgeName(senderName) ? presentationForVerifiedMinecraftUsername(senderName) : null;
     }
 
-    private ColorRamp individualColorsForBridgeSender(String senderName, String discordId) {
-        ColorRamp byId = lookup(index.colorsByIdentity(), discordId);
-        return byId != null && !byId.isEmpty() ? byId : lookup(index.colorsByIdentity(), senderName);
+    private boolean ambiguousBridgeName(String name) {
+        String key = normalizeKey(name);
+        return key != null && index.ambiguousBridgeAliases().contains(key);
     }
 
-    private RankPresentation present(DiscordRank rank, String identity) {
-        return rank == null ? null : presentation(rank, lookup(index.colorsByIdentity(), identity));
-    }
-
-    private RankPresentation present(ProfilePresentation profile) {
-        return profile == null ? null : presentation(profile.rank(), profile.colors());
+    private BridgeIdentity bridgeIdentity(String name, String id) {
+        return normalizeKey(id) == null ? lookup(index.bridgeByAlias(), name) : lookup(index.bridgeById(), id);
     }
 
     private RankPresentation presentation(DiscordRank rank, ColorRamp individual) {
@@ -222,28 +213,48 @@ public final class DiscordRankService {
 
         Map<String, DiscordRank> ranksByKey = progressionRanks(response.catalog());
         Map<String, DiscordRank> byUuid = new HashMap<>();
+        Map<String, String> uuidByMinecraftUsername = new HashMap<>();
+        Map<String, ColorRamp> colorsByMinecraftUuid = new HashMap<>();
         Map<String, DiscordRank> byMinecraftUsername = new HashMap<>();
         Map<String, ColorRamp> colorsByMinecraftUsername = new HashMap<>();
         Map<String, DiscordRank> byDiscordIdentity = new HashMap<>();
         Map<String, ColorRamp> colorsByIdentity = new HashMap<>();
-        Map<String, String> minecraftUsernameByDiscordIdentity = new HashMap<>();
-        Map<String, ProfilePresentation> unverifiedMinecraftAliases = new HashMap<>();
-        Set<String> ambiguousMinecraftAliases = new HashSet<>();
+        Map<String, BridgeIdentity> bridgeById = new HashMap<>();
+        Map<String, BridgeIdentity> bridgeByAlias = new HashMap<>();
+        Set<String> ambiguousIds = new HashSet<>(), ambiguousAliases = new HashSet<>();
+        Set<String> knownUuids = new HashSet<>(), ambiguousUuids = new HashSet<>();
+        Set<String> knownNames = new HashSet<>(), ambiguousNames = new HashSet<>();
         int rankedProfiles = 0;
 
         for (RankProfilesResponse.Profile profile : response.profiles()) {
+            if (profile == null) continue;
             DiscordRank rank = resolveRank(profile, ranksByKey);
-            if (rank == null) {
-                continue;
-            }
-            rankedProfiles++;
             ColorRamp individual = profileDisplayColors(profile.displayColors());
-
             RankProfilesResponse.MinecraftIdentity minecraft = profile.minecraft();
+            RankProfilesResponse.DiscordIdentity discord = profile.discord();
+            if (minecraft != null) {
+                String uuid = PlayerNameCache.formatUUID(minecraft.uuid());
+                String name = normalizeKey(minecraft.username());
+                if (uuid != null && !knownUuids.add(uuid)) ambiguousUuids.add(uuid);
+                if (name != null && !knownNames.add(name)) ambiguousNames.add(name);
+            }
+            if (discord != null) {
+                BridgeIdentity sender = new BridgeIdentity(rank, individual,
+                        minecraft == null ? null : minecraft.username());
+                putUnique(bridgeById, ambiguousIds, discord.id(), sender);
+                for (String alias : new String[] { discord.id(), discord.username(), discord.displayName(),
+                        stripRankPrefix(discord.displayName(), ranksByKey) })
+                    putUnique(bridgeByAlias, ambiguousAliases, alias, sender);
+            }
+            // Establish identity ownership before presentation eligibility.
+            if (rank == null) continue;
+            rankedProfiles++;
             if (minecraft != null) {
                 String uuid = PlayerNameCache.formatUUID(minecraft.uuid());
                 if (uuid != null) {
                     byUuid.put(uuid, rank);
+                    colorsByMinecraftUuid.put(uuid, individual);
+                    putIdentity(uuidByMinecraftUsername, minecraft.username(), uuid);
                     putColors(colorsByIdentity, uuid, individual);
                 }
                 putIdentity(byMinecraftUsername, minecraft.username(), rank);
@@ -251,45 +262,34 @@ public final class DiscordRankService {
                 putColors(colorsByIdentity, minecraft.username(), individual);
             }
 
-            RankProfilesResponse.DiscordIdentity discord = profile.discord();
             if (discord != null) {
-                putIdentity(byDiscordIdentity, discord.id(), rank);
-                putIdentity(byDiscordIdentity, discord.username(), rank);
-                putIdentity(byDiscordIdentity, discord.displayName(), rank);
-                putIdentity(byDiscordIdentity, stripRankPrefix(discord.displayName(), ranksByKey), rank);
                 putColors(colorsByIdentity, discord.id(), individual);
                 putColors(colorsByIdentity, discord.username(), individual);
                 putColors(colorsByIdentity, discord.displayName(), individual);
                 putColors(colorsByIdentity, stripRankPrefix(discord.displayName(), ranksByKey), individual);
 
-                putUnverifiedMinecraftAlias(
-                        unverifiedMinecraftAliases,
-                        ambiguousMinecraftAliases,
-                        minecraftNameFromRankedDisplayName(discord.displayName(), ranksByKey),
-                        new ProfilePresentation(rank, individual));
 
-                // Badges are held against the game account, so a bridge sender has to
-                // be mapped back to their Minecraft name before one can be looked up.
-                String gameName = minecraft == null ? null : minecraft.username();
-                putLink(minecraftUsernameByDiscordIdentity, discord.id(), gameName);
-                putLink(minecraftUsernameByDiscordIdentity, discord.username(), gameName);
-                putLink(minecraftUsernameByDiscordIdentity, discord.displayName(), gameName);
-                putLink(
-                        minecraftUsernameByDiscordIdentity,
-                        stripRankPrefix(discord.displayName(), ranksByKey),
-                        gameName);
             }
         }
 
+        ambiguousUuids.forEach(uuid -> { byUuid.remove(uuid); colorsByMinecraftUuid.remove(uuid); });
+        ambiguousNames.forEach(name -> {
+            byMinecraftUsername.remove(name); colorsByMinecraftUsername.remove(name); uuidByMinecraftUsername.remove(name);
+        });
+        bridgeByAlias.forEach((alias, sender) -> { if (sender.rank() != null) byDiscordIdentity.put(alias, sender.rank()); });
         return new Index(
                 Map.copyOf(byUuid),
+                Map.copyOf(uuidByMinecraftUsername),
+                Map.copyOf(colorsByMinecraftUuid),
                 Map.copyOf(byMinecraftUsername),
                 Map.copyOf(colorsByMinecraftUsername),
                 Map.copyOf(byDiscordIdentity),
                 roleColors(response.catalog()),
                 Map.copyOf(colorsByIdentity),
-                Map.copyOf(minecraftUsernameByDiscordIdentity),
-                Map.copyOf(unverifiedMinecraftAliases),
+                Map.copyOf(bridgeById),
+                Map.copyOf(bridgeByAlias),
+                Set.copyOf(ambiguousAliases),
+                Set.copyOf(knownUuids),
                 rankedProfiles);
     }
 
@@ -354,24 +354,15 @@ public final class DiscordRankService {
      * username it is linked to, because badges are held against the game account.
      */
     public SeqBadgeTier insigniaForBridgeSender(String senderName) {
-        return insigniaForMinecraftUsername(minecraftUsernameFor(senderName));
+        return insigniaForBridgeSender(senderName, null);
     }
 
-    /** Insignia of a bridge sender, preferring their Discord id when one is supplied. */
     public SeqBadgeTier insigniaForBridgeSender(String senderName, String discordId) {
-        String linked = minecraftUsernameFor(discordId);
-        return insigniaForMinecraftUsername(linked != null ? linked : minecraftUsernameFor(senderName));
+        BridgeIdentity sender = bridgeIdentity(senderName, discordId);
+        String gameName = sender == null ? (normalizeKey(discordId) == null && !ambiguousBridgeName(senderName)
+                && rankForMinecraftUsername(senderName) != null ? senderName : null) : sender.minecraftUsername();
+        return gameName == null ? null : insigniaForMinecraftUsername(gameName);
     }
-
-    /**
-     * The Minecraft username linked to a Discord identity, or {@code identity} itself
-     * when it is already a game name.
-     */
-    private String minecraftUsernameFor(String identity) {
-        String linked = lookup(index.minecraftUsernameByDiscordIdentity(), identity);
-        return linked != null ? linked : identity;
-    }
-
 
     /**
      * The role's gradient stops in Discord's order, dropping any the backend leaves
@@ -491,57 +482,12 @@ public final class DiscordRankService {
         return null;
     }
 
-    /**
-     * Extracts a possible Minecraft name only from the established
-     * {@code "<recognized rank> <name>"} Discord nickname convention.
-     */
-    static String minecraftNameFromRankedDisplayName(
-            String displayName, Map<String, DiscordRank> ranksByKey) {
-        if (displayName == null) {
-            return null;
-        }
-        String trimmed = displayName.trim();
-        DiscordRank matchedPrefix = null;
-        for (DiscordRank rank : ranksByKey.values()) {
-            String prefix = rank.label() + " ";
-            if (trimmed.regionMatches(true, 0, prefix, 0, prefix.length())
-                    && (matchedPrefix == null || rank.label().length() > matchedPrefix.label().length())) {
-                matchedPrefix = rank;
-            }
-        }
-        if (matchedPrefix == null) {
-            return null;
-        }
-        String candidate = trimmed.substring(matchedPrefix.label().length() + 1).trim();
-        return MINECRAFT_USERNAME_PATTERN.matcher(candidate).matches() ? candidate : null;
-    }
-
-    /**
-     * Adds a nickname-derived alias exactly once. A second profile claiming the
-     * same case-insensitive name permanently marks that alias ambiguous for this
-     * snapshot, irrespective of profile order.
-     */
-    private static void putUnverifiedMinecraftAlias(
-            Map<String, ProfilePresentation> target,
-            Set<String> ambiguous,
-            String minecraftUsername,
-            ProfilePresentation presentation) {
-        String key = normalizeKey(minecraftUsername);
-        if (key == null || ambiguous.contains(key)) {
-            return;
-        }
-        if (target.putIfAbsent(key, presentation) != null) {
-            target.remove(key);
-            ambiguous.add(key);
-        }
-    }
-
-    /** Links a Discord identity to a game account, ignoring blanks on either side. */
-    private static void putLink(Map<String, String> target, String identity, String minecraftUsername) {
+    private static void putUnique(Map<String, BridgeIdentity> map, Set<String> ambiguous,
+                                  String identity, BridgeIdentity sender) {
         String key = normalizeKey(identity);
-        if (key != null && minecraftUsername != null && !minecraftUsername.isBlank()) {
-            target.put(key, minecraftUsername);
-        }
+        if (key == null || ambiguous.contains(key)) return;
+        BridgeIdentity previous = map.putIfAbsent(key, sender);
+        if (previous != null && previous != sender) { map.remove(key); ambiguous.add(key); }
     }
 
     private static <T> void putIdentity(Map<String, T> target, String identity, T value) {
@@ -573,27 +519,34 @@ public final class DiscordRankService {
      * @param colorsByRoleKey           the colours every holder of a role gets by default
      * @param colorsByIdentity          colours granted to an individual member, which win over
      *                                  their role's
-     * @param unverifiedMinecraftAliases unique, display-only candidates derived from ranked
-     *                                   Discord nicknames
      */
     record Index(
             Map<String, DiscordRank> byMinecraftUuid,
+            Map<String, String> uuidByMinecraftUsername,
+            Map<String, ColorRamp> colorsByMinecraftUuid,
             Map<String, DiscordRank> byMinecraftUsername,
             Map<String, ColorRamp> colorsByMinecraftUsername,
             Map<String, DiscordRank> byDiscordIdentity,
             Map<String, ColorRamp> colorsByRoleKey,
             Map<String, ColorRamp> colorsByIdentity,
-            Map<String, String> minecraftUsernameByDiscordIdentity,
-            Map<String, ProfilePresentation> unverifiedMinecraftAliases,
+            Map<String, BridgeIdentity> bridgeById,
+            Map<String, BridgeIdentity> bridgeByAlias,
+            Set<String> ambiguousBridgeAliases,
+            Set<String> knownMinecraftUuids,
             int rankedProfiles) {
+
+        Map<String, String> minecraftUsernameByDiscordIdentity() {
+            Map<String, String> links = new HashMap<>();
+            bridgeByAlias.forEach((name, sender) -> { if (sender.minecraftUsername() != null) links.put(name, sender.minecraftUsername()); });
+            return Map.copyOf(links);
+        }
 
         /** An index that knows nobody, used before the first load. */
         static Index empty() {
             return new Index(
-                    Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), 0);
+                    Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Set.of(), Set.of(), 0);
         }
     }
 
-    /** Rank and profile palette kept together so aliases cannot mix members. */
-    private record ProfilePresentation(DiscordRank rank, ColorRamp colors) {}
+    private record BridgeIdentity(DiscordRank rank, ColorRamp colors, String minecraftUsername) {}
 }

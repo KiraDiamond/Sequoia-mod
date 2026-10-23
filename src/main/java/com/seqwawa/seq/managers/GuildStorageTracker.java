@@ -390,9 +390,9 @@ public final class GuildStorageTracker implements NotificationAccessor {
 
         String senderDisplayed = matcher.group("sender");
         String recipientDisplayed = matcher.group("recipient");
-        String senderUsername = resolver.resolveUsername(senderDisplayed, matcher.start("sender"), matcher.end("sender"));
+        String senderUsername = resolver.resolve(matcher.start("sender"), matcher.end("sender"), PacketNameResolver.Policy.CHAT, "reward.sender").username();
         String recipientUsername =
-                resolver.resolveUsername(recipientDisplayed, matcher.start("recipient"), matcher.end("recipient"));
+                resolver.resolve(matcher.start("recipient"), matcher.end("recipient"), PacketNameResolver.Policy.CHAT, "reward.recipient").username();
         if (senderUsername == null || recipientUsername == null) {
             return null;
         }
@@ -820,8 +820,8 @@ public final class GuildStorageTracker implements NotificationAccessor {
                 }
                 Style style = fragment.getStyle();
                 canonical.append("|text=").append(PacketTextNormalizer.normalizeForParsing(fragmentText));
-                canonical.append("|hover=").append(ChatManager.extractHoverRealUsername(style));
-                canonical.append("|insertion=").append(ChatManager.extractInsertionUsername(style));
+                canonical.append("|hover=").append(PacketNameResolver.extractHoverRealUsername(style));
+                canonical.append("|insertion=").append(PacketNameResolver.extractInsertionUsername(style));
                 canonical.append("|color=")
                         .append(style.getColor() != null ? style.getColor().getValue() : "none");
             }

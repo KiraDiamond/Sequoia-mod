@@ -5,7 +5,6 @@ import com.google.common.cache.CacheBuilder;
 import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.integrations.WynntilsChatAccess;
 import com.seqwawa.seq.network.WynncraftServerPolicy;
-import com.seqwawa.seq.utils.ChatIdentityResolver;
 import com.seqwawa.seq.utils.ComponentTextEditor;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -23,7 +22,6 @@ public final class PrivateMessageGuildTagDecorator {
     private static final Pattern FORMATTING = Pattern.compile("§(?:#[0-9a-fA-F]{8}|[0-9a-fA-Fk-oK-OrR])");
     private static final Pattern TIMESTAMP = Pattern.compile("\\s*(?:\\[\\d{1,2}:\\d{2}(?::\\d{2})?\\]\\s*)?");
     private static final Pattern HEADER = Pattern.compile("\\s*(.+?)\\s+\uE003\\s+(.+?):\\s");
-    private static final Pattern REVEALED_NAME = Pattern.compile(".*\\(([a-zA-Z0-9_]{3,16})\\)");
     private static final Pattern GUILD_TAG = Pattern.compile("[A-Za-z0-9]{1,5}");
     private static final PrivateMessageGuildTagCache TAGS = new PrivateMessageGuildTagCache(
             WynntilsChatAccess::lookupGuildTag, System::currentTimeMillis);
@@ -120,14 +118,14 @@ public final class PrivateMessageGuildTagDecorator {
         header.region(marker + 1, masked.length());
         if (!header.lookingAt()) return unchanged;
 
-        String from = username(fragments, header.start(1), header.end(1));
-        String to = username(fragments, header.start(2), header.end(2));
+        String from = username(message, text, header.start(1), header.end(1), "private.from");
+        String to = username(message, text, header.start(2), header.end(2), "private.to");
         boolean fromLocal = isLocal(from, localUsername);
         boolean toLocal = isLocal(to, localUsername);
         if (fromLocal == toLocal) return unchanged;
         int group = fromLocal ? 2 : 1;
         String other = fromLocal ? to : from;
-        if (!ChatIdentityResolver.isValidUsername(other)) return unchanged;
+        if (!(PacketNameResolver.validUsername(other) != null)) return unchanged;
         return new ParsedMessage(message, other, fragments, header.start(group));
     }
 
@@ -163,23 +161,9 @@ public final class PrivateMessageGuildTagDecorator {
         return username != null && (username.equalsIgnoreCase(localUsername) || username.equalsIgnoreCase("You"));
     }
 
-    private static String username(List<ComponentTextEditor.Fragment> fragments, int start, int end) {
-        var name = Component.empty();
-        int offset = 0;
-        for (var fragment : fragments) {
-            int next = offset + fragment.text().length();
-            if (next > start && offset < end) {
-                name.append(Component.literal(fragment.text().substring(Math.max(0, start - offset),
-                        Math.min(fragment.text().length(), end - offset))).withStyle(fragment.style()));
-            }
-            offset = next;
-        }
-        String visible = maskDecorations(name.getString()).trim();
-        if (visible.startsWith("[")) return null; // Already tagged by another decorator.
-        String canonical = ChatIdentityResolver.resolveCanonicalUsername(name, visible);
-        if (canonical != null) return canonical;
-        Matcher revealed = REVEALED_NAME.matcher(visible);
-        return revealed.matches() ? revealed.group(1) : null;
+    private static String username(Component message, String text, int start, int end, String role) {
+        if (maskDecorations(text.substring(start, end)).trim().startsWith("[")) return null;
+        return PacketNameResolver.from(message).resolveRaw(text, start, end, PacketNameResolver.Policy.CHAT, role).username();
     }
 
     private static Style styleAt(List<ComponentTextEditor.Fragment> fragments, int index) {

@@ -416,8 +416,7 @@ public final class GuildRankNametagDecorator {
     }
 
     static RankPresentation rankFor(DiscordRankService service, UUID uuid, String username) {
-        RankPresentation byAccount = service.presentationForMinecraftUuid(uuid);
-        return byAccount != null ? byAccount : service.presentationForMinecraftUsername(username);
+        return service.presentationForMinecraftAccount(uuid, username);
     }
 
     private static boolean isEnabled() {

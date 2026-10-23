@@ -114,23 +114,26 @@ class DiscordRankChatDecoratorTest {
 
     @Test
     void poisonedPartyCacheCannotGiveAnUnrankedAccountYearnmsDruidRank() {
-        NicknameResolverCache.remember("IChooseThou", "Yearnm");
+        IdentityTestSupport.remember("IChooseThou", "Yearnm");
         Component message = guildLine("RECRUIT", "IChooseThou", "IChooseThou", "hello");
         assertSame(message, DiscordRankChatDecorator.decorateGuildChat(
                 message, name -> name.equalsIgnoreCase("Yearnm") ? DRUID : null));
     }
 
     @Test
-    void plainOutsiderWithRankedInsertionCannotBorrowASequoiaIdentity() {
+    void scopedInsertionUsesTheSameAccountAsTheRelay() {
         Component message = guildLine("RECRUIT", "IChooseThou", "Yearnm", "hello");
-        assertSame(message, DiscordRankChatDecorator.decorateSupportedChat(
+        assertEquals("Yearnm", ChatManager.parseGuildMessage(
+                Component.empty().append(Component.literal("IChooseThou").withStyle(Style.EMPTY.withInsertion("Yearnm")))
+                        .append(": hello")).username());
+        assertEquals(List.of("druid"), pillLabels(DiscordRankChatDecorator.decorateSupportedChat(
                 message, name -> name.equalsIgnoreCase("Yearnm") ? DRUID : null, name -> null,
-                true, false, name -> name.equalsIgnoreCase("Yearnm")));
+                true, false, name -> name.equalsIgnoreCase("Yearnm"))));
     }
 
     @Test
     void cachedUnrankedRealAccountWinsOverRankedItalicNickname() {
-        NicknameResolverCache.remember("ArcLeRetour", "IChooseThou");
+        IdentityTestSupport.remember("ArcLeRetour", "IChooseThou");
         Component message = Component.empty()
                 .append(Component.literal(WynnPillGlyphs.encodePlainPill("RECRUIT") + " "))
                 .append(Component.literal("ArcLeRetour").withStyle(Style.EMPTY.withItalic(true)
@@ -141,7 +144,7 @@ class DiscordRankChatDecoratorTest {
 
     @Test
     void unrankedRealAccountHoverOverridesRankedNicknameInsertionAndCache() {
-        NicknameResolverCache.remember("ArcLeRetour", "pat_crafter07");
+        IdentityTestSupport.remember("ArcLeRetour", "pat_crafter07");
         Style identity = Style.EMPTY.withItalic(true).withInsertion("pat_crafter07")
                 .withHoverEvent(new HoverEvent.ShowText(
                         Component.literal("ArcLeRetour's real username is IChooseThou")));
@@ -154,7 +157,7 @@ class DiscordRankChatDecoratorTest {
 
     @Test
     void unrankedExplicitAccountRevealCannotFallThroughToRankedNicknameOrCache() {
-        NicknameResolverCache.remember("ArcLeRetour(IChooseThou)", "pat_crafter07");
+        IdentityTestSupport.remember("ArcLeRetour(IChooseThou)", "pat_crafter07");
         Component message = guildLine("RECRUIT", "ArcLeRetour(IChooseThou)", "pat_crafter07", "hello");
         assertSame(message, DiscordRankChatDecorator.decorateGuildChat(message, DiscordRankChatDecoratorTest::lookup));
     }
@@ -183,7 +186,7 @@ class DiscordRankChatDecoratorTest {
     @Test
     void partyNicknameMatchingAnotherAccountUsesNunotsRole() {
         for (String apostrophe : List.of("'", "\u2019")) {
-            NicknameResolverCache.remember("Reyzhia", "reyzhia");
+            IdentityTestSupport.remember("Reyzhia", "reyzhia");
             Style name = Style.EMPTY.withColor(PARTY_SPEAKER_GOLD).withItalic(true).withInsertion("reyzhia")
                     .withHoverEvent(new HoverEvent.ShowText(
                             Component.literal("Reyzhia" + apostrophe + "s real name is nunot")));

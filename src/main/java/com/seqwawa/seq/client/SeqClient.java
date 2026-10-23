@@ -13,6 +13,7 @@ import com.seqwawa.seq.LightRoomTnaRange.LightRoom;
 import lombok.Getter;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientWorldEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -427,6 +428,8 @@ public class SeqClient implements ClientModInitializer {
         CraftedScrollRangeVisualiserClient.initialize();
         IngredientWaypointRenderer.initialize();
         TnaLineupHelper.initialize();
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> NicknameResolverCache.reset());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> NicknameResolverCache.reset());
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
             GlobalSoundListener.shutdown();
             MinecraftUiRenderer.shutdown();

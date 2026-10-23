@@ -131,65 +131,11 @@ public final class WynnPartyScoreboardReader {
                     trimOffset + parsed.nicknameEnd());
             boolean fullHealthBar = isFullHealthBar(sidebarLine.resolver(), trimOffset, parsed);
 
-            String username = sidebarLine.resolver().resolveMetadataUsername(
-                    trimOffset + parsed.nicknameStart(),
-                    trimOffset + parsed.nicknameEnd());
-            if (username != null) {
-                SeqClient.LOGGER.debug(
-                        "[WynnPartyScoreboard] Metadata resolved nickname='{}' username='{}' line='{}'",
-                        parsed.nickname(),
-                        username,
-                        line);
-                NicknameResolverCache.remember(parsed.nickname(), username);
-            } else {
-                username = sidebarLine.resolver().resolveMetadataUsername(
-                        trimOffset,
-                        trimOffset + trimmedLine.length());
-                if (username != null) {
-                    SeqClient.LOGGER.debug(
-                            "[WynnPartyScoreboard] Line metadata resolved nickname='{}' username='{}' line='{}'",
-                            parsed.nickname(),
-                            username,
-                            line);
-                    NicknameResolverCache.remember(parsed.nickname(), username);
-                }
-            }
-
-            if (username == null) {
-                SeqClient.LOGGER.debug(
-                        "[WynnPartyScoreboard] Metadata missing nickname='{}' line='{}'; trying nickname cache",
-                        parsed.nickname(),
-                        line);
-                username = NicknameResolverCache.resolveUsername(parsed.nickname());
-                if (username == null && !nicknameStyle) {
-                    username = resolveVisiblePlayerUsername(parsed.nickname());
-                    if (username != null) {
-                        SeqClient.LOGGER.debug(
-                                "[WynnPartyScoreboard] Visible player resolved non-nick name='{}' username='{}' line='{}'",
-                                parsed.nickname(),
-                                username,
-                                line);
-                        NicknameResolverCache.remember(parsed.nickname(), username);
-                    }
-                }
-            }
-
-            if (username != null && !nicknameStyle) {
-                String fullVisibleUsername = resolveVisiblePlayerUsername(username);
-                if (fullVisibleUsername == null) {
-                    fullVisibleUsername = resolveVisiblePlayerUsername(parsed.nickname());
-                }
-                if (fullVisibleUsername != null && !fullVisibleUsername.equals(username)) {
-                    SeqClient.LOGGER.debug(
-                            "[WynnPartyScoreboard] Canonicalized non-nick name='{}' username='{}' fullUsername='{}' line='{}'",
-                            parsed.nickname(),
-                            username,
-                            fullVisibleUsername,
-                            line);
-                    username = fullVisibleUsername;
-                    NicknameResolverCache.remember(parsed.nickname(), username);
-                }
-            }
+            var identity = sidebarLine.resolver().resolve(trimOffset + parsed.nicknameStart(),
+                    trimOffset + parsed.nicknameEnd(), PacketNameResolver.Policy.TRUNCATED, "sidebar.member");
+            String username = identity.username();
+            if (identity.state() == PacketNameResolver.State.UNRESOLVED && !nicknameStyle)
+                username = resolveVisiblePlayerUsername(parsed.nickname());
 
             SeqClient.LOGGER.debug(
                     "[WynnPartyScoreboard] Parsed nickname='{}' username='{}' hp={} level={} online={} alive={} fullBar={} italic={} line='{}'",

@@ -34,6 +34,13 @@ class ChatManagerTest {
     }
 
     @Test
+    void relayRecognizesTheSameExplicitNameFormatsAsColouring() {
+        for (String display : List.of("Some Nick(nunot)", "nunot/Some Nick", "Some Nick/nunot"))
+            assertEquals("nunot", ChatManager.parseGuildMessage(Component.literal(display + ": hello")).username());
+        assertNull(ChatManager.parseGuildMessage(Component.literal("nunot/reyzhia: hello")));
+    }
+
+    @Test
     void bankAccessMetadataCannotPoisonTheDepositorsChatIdentity() {
         Component bank = Component.empty()
                 .append(Component.literal("cinfrascitizen"))
@@ -41,8 +48,8 @@ class ChatManagerTest {
                 .append(Component.literal("Everyone").withStyle(Style.EMPTY.withInsertion("Everyone")))
                 .append(Component.literal(")"));
         ChatManager.observeNicknameMappings(bank);
-        assertNull(NicknameResolverCache.resolveUsername("Everyone"));
-        NicknameResolverCache.remember("cinfrascitizen", "Everyone");
+        assertNull(IdentityTestSupport.resolve("Everyone"));
+        IdentityTestSupport.remember("cinfrascitizen", "Everyone");
 
         Component chat = Component.literal("cinfrascitizen: in gbank leader");
         ChatManager.observeNicknameMappings(chat);
@@ -52,7 +59,7 @@ class ChatManagerTest {
         assertEquals("cinfrascitizen", parsed.username());
         assertNull(parsed.nickname());
         assertEquals("https://mc-heads.net/avatar/cinfrascitizen/128", parsed.avatarUrl());
-        assertEquals("cinfrascitizen", ChatManager.resolvePacketUsername(bank, "cinfrascitizen"));
+        assertEquals("cinfrascitizen", GuildBankTracker.getInstance().parseEvent(bank).player());
     }
 
     @Test
@@ -61,24 +68,23 @@ class ChatManagerTest {
             ChatManager.observeNicknameMappings(Component.literal(
                     "cinfrascitizen deposited 50x Liquid Emerald to the Guild Bank" + opening + "Everyone)"));
 
-            assertNull(NicknameResolverCache.resolveUsername("cinfrascitizen"));
-            assertNull(NicknameResolverCache.resolveUsername("cinfrascitizen deposited"));
-            assertNull(NicknameResolverCache.resolveUsername(
+            assertNull(IdentityTestSupport.resolve("cinfrascitizen"));
+            assertNull(IdentityTestSupport.resolve("cinfrascitizen deposited"));
+            assertNull(IdentityTestSupport.resolve(
                     "cinfrascitizen deposited 50x Liquid Emerald to the Guild Bank"));
         }
     }
 
     @Test
-    void legitimateTruncatedNicknameMappingsStillResolve() {
-        NicknameResolverCache.remember("Long Cache Lookup Nickname", "nunot");
+    void chatDoesNotUseTruncatedNicknameMappings() {
+        IdentityTestSupport.remember("Long Cache Lookup Nickname", "nunot");
 
-        assertEquals("nunot", ChatManager.parseGuildMessage(
-                Component.literal("Long Cache Lookup: hello"), true).username());
+        assertNull(ChatManager.parseGuildMessage(Component.literal("Long Cache Lookup: hello"), true));
     }
 
     @Test
     void bodyAndOldCacheCannotTurnGaztheCatIntoRaidKeeper() {
-        NicknameResolverCache.remember("GaztheCat", "RaidKeeper");
+        IdentityTestSupport.remember("GaztheCat", "RaidKeeper");
         Component message = Component.empty()
                 .append(Component.literal("GaztheCat").withStyle(Style.EMPTY.withInsertion("GaztheCat")))
                 .append(Component.literal(": tna 3/4 "))
@@ -91,7 +97,7 @@ class ChatManagerTest {
         assertEquals("GaztheCat", parsed.username());
         assertNull(parsed.nickname());
         assertEquals("https://mc-heads.net/avatar/GaztheCat/128", parsed.avatarUrl());
-        assertEquals("GaztheCat", NicknameResolverCache.resolveUsername("GaztheCat"));
+        assertNull(IdentityTestSupport.resolve("GaztheCat"));
     }
 
     @Test
@@ -103,7 +109,7 @@ class ChatManagerTest {
         ChatManager.observeNicknameMappings(message);
 
         assertEquals("GaztheCat", ChatManager.parseGuildMessage(message, true).username());
-        assertNull(NicknameResolverCache.resolveUsername("OtherNick"));
+        assertNull(IdentityTestSupport.resolve("OtherNick"));
     }
 
     @Test
@@ -118,7 +124,7 @@ class ChatManagerTest {
 
         assertNotNull(parsed);
         assertEquals("GaztheCat", parsed.username());
-        assertEquals("GaztheCat", NicknameResolverCache.resolveUsername("GaztheCat"));
+        assertEquals("GaztheCat", IdentityTestSupport.resolve("GaztheCat"));
     }
 
     @Test
@@ -452,7 +458,7 @@ class ChatManagerTest {
 
         ChatManager.observeNicknameMappings(message);
 
-        assertEquals("xmattypazox", NicknameResolverCache.resolveUsername("DrBavaro"));
+        assertEquals("xmattypazox", IdentityTestSupport.resolve("DrBavaro"));
     }
 
     @Test
@@ -464,7 +470,7 @@ class ChatManagerTest {
 
         ChatManager.observeNicknameMappings(message);
 
-        assertNull(NicknameResolverCache.resolveUsername("cinfrascitizen"));
+        assertNull(IdentityTestSupport.resolve("cinfrascitizen"));
     }
 
     @Test
@@ -472,12 +478,12 @@ class ChatManagerTest {
         ChatManager.observeNicknameMappings(
                 Component.literal("DrBavaro(xmattypazox) has given you 20% resistance."));
 
-        assertEquals("xmattypazox", NicknameResolverCache.resolveUsername("DrBavaro"));
+        assertEquals("xmattypazox", IdentityTestSupport.resolve("DrBavaro"));
     }
 
     @Test
     void parseGuildMessageUsesObservedNicknameMappingForAvatar() {
-        NicknameResolverCache.remember("Cache Lookup Nickname", "RealPlayer");
+        IdentityTestSupport.remember("Cache Lookup Nickname", "RealPlayer");
 
         ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
                 Component.literal("󏿼󐀆 Cache Lookup Nickname: hello"), true);
@@ -492,9 +498,8 @@ class ChatManagerTest {
         ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
                 Component.literal("󏿼󐀆 NoCache Alias: hello"));
 
-        assertNotNull(parsed);
-        assertNull(parsed.avatarUrl());
-        assertNull(NicknameResolverCache.resolveUsername("NoCache Alias"));
+        assertNull(parsed);
+        assertNull(IdentityTestSupport.resolve("NoCache Alias"));
     }
 
     @Test

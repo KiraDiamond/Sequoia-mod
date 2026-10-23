@@ -27,8 +27,8 @@ class WynnPartyScoreboardReaderTest {
         assertEquals(2, observation.members().size());
         observation.members().forEach(member -> assertNull(member.username()));
         assertEquals(List.of("Yearnm", "IChooseThou"), observation.canonicalRosterUsernames());
-        assertNull(NicknameResolverCache.resolveUsername("IChooseThou"));
-        assertNull(NicknameResolverCache.resolveUsername("Yearnm"));
+        assertNull(IdentityTestSupport.resolve("IChooseThou"));
+        assertNull(IdentityTestSupport.resolve("Yearnm"));
     }
 
     @Test
@@ -38,7 +38,7 @@ class WynnPartyScoreboardReaderTest {
                 List.of("Yearnm"));
 
         assertNull(observation.members().getFirst().username());
-        assertNull(NicknameResolverCache.resolveUsername("IChooseThou"));
+        assertNull(IdentityTestSupport.resolve("IChooseThou"));
     }
 
     @Test

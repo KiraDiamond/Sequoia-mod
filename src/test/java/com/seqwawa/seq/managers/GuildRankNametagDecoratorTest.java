@@ -432,6 +432,12 @@ class GuildRankNametagDecoratorTest {
     }
 
     @Test
+    void aKnownDifferentAccountCannotBeSelectedByName() {
+        DiscordRankService service = serviceWith(profile(ROSTER_UUID.toString(), "ArcLeRetour"));
+        assertNull(GuildRankNametagDecorator.rankFor(service, UUID.randomUUID(), "ArcLeRetour"));
+    }
+
+    @Test
     void nobodyOnTheRosterWearsNothing() {
         DiscordRankService service = serviceWith(profile(ROSTER_UUID.toString(), "ArcLeRetour"));
 
