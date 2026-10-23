@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -57,6 +58,7 @@ import com.seqwawa.seq.network.ApiClient;
 import com.seqwawa.seq.network.ConnectionManager;
 import com.seqwawa.seq.network.WynncraftServerPolicy;
 import com.seqwawa.seq.network.auth.AuthException;
+import com.seqwawa.seq.network.auth.UnlinkedAccountWarning;
 import com.seqwawa.seq.ui.PartyFinderScreen;
 import com.seqwawa.seq.utils.PlayerNameCache;
 
@@ -122,6 +124,11 @@ public class SeqCommand {
                                                         return 1;
                                                 }))
                                 .then(ClientCommandManager.literal("status").executes(SeqCommand::runStatus))
+                                .then(ClientCommandManager.literal("_dismiss-unlinked")
+                                                .then(ClientCommandManager.argument(
+                                                                "profile",
+                                                                StringArgumentType.word())
+                                                                .executes(SeqCommand::dismissUnlinkedWarning)))
                                 .then(ClientCommandManager.literal("logout")
                                                 .executes(ctx -> {
                                                         ConnectionManager.getInstance().disconnect();
@@ -738,6 +745,20 @@ public class SeqCommand {
 
         private static int openGuildMembersScreen(CommandContext<FabricClientCommandSource> ctx) {
                 SeqClient.openGuildMembersScreen();
+                return 1;
+        }
+
+        private static int dismissUnlinkedWarning(CommandContext<FabricClientCommandSource> ctx) {
+                UUID profileId;
+                try {
+                        profileId = UUID.fromString(StringArgumentType.getString(ctx, "profile"));
+                } catch (IllegalArgumentException e) {
+                        return 0;
+                }
+                if (!UnlinkedAccountWarning.getInstance().dismiss(profileId)) {
+                        return 0;
+                }
+                sendFeedback(ctx.getSource(), "Hidden for this session.");
                 return 1;
         }
 

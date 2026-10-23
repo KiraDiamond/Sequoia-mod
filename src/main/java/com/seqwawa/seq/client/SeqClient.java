@@ -16,6 +16,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientWorldEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
@@ -70,6 +71,7 @@ import com.seqwawa.seq.network.WynncraftServerPolicy;
 import com.seqwawa.seq.network.auth.MinecraftAuthService;
 import com.seqwawa.seq.network.auth.RaidProfilesSession;
 import com.seqwawa.seq.network.auth.StoredAuthSession;
+import com.seqwawa.seq.network.auth.UnlinkedAccountWarning;
 import com.seqwawa.seq.radiance.RadianceCheckerClient;
 import com.seqwawa.seq.raids.tna.TnaLineupHelper;
 import com.seqwawa.seq.raids.tna.TnaSahurSoundDetector;
@@ -431,6 +433,8 @@ public class SeqClient implements ClientModInitializer {
             GlobalSoundListener.shutdown();
             MinecraftUiRenderer.shutdown();
         });
+        ClientPlayConnectionEvents.DISCONNECT.register(
+                (handler, client) -> UnlinkedAccountWarning.getInstance().reset());
         GearSharingProtectionManager gearSharingProtectionManager = new GearSharingProtectionManager();
         ClientWorldEvents.AFTER_CLIENT_WORLD_CHANGE.register((client, world) -> {
             gearSharingProtectionManager.onWorldChange(
