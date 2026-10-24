@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
@@ -358,6 +360,7 @@ class UpdateManagerTest {
             Path modsDir = gameDir.resolve("mods");
             Files.createDirectories(modsDir);
             Files.writeString(modsDir.resolve("sequoia-0.1.0.jar"), "old");
+            Files.writeString(modsDir.resolve("sequoia-0.1.1.jar"), "previous replacement");
             Files.writeString(modsDir.resolve("othermod.jar"), "keep");
 
             try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
@@ -374,6 +377,129 @@ class UpdateManagerTest {
                 assertTrue(Files.exists(modsDir.resolve("othermod.jar")));
                 assertEquals("Installed v0.1.1. Restart required.", manager.getStatusLine());
                 assertEquals(List.of("Installed v0.1.1. Restart Minecraft to load it."), manager.notifications);
+            }
+        }
+    }
+
+    @Test
+    void applyReleaseKeepsInstalledJarWhenReplacementMoveFails(@TempDir Path gameDir) throws Exception {
+        byte[] jarBytes = "fake-jar-binary".getBytes(StandardCharsets.UTF_8);
+        String checksum = sha256(jarBytes);
+
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.respondBytes("/downloads/sequoia-0.1.1.jar", jarBytes, "application/java-archive");
+            server.respondText("/downloads/sequoia-0.1.1.jar.sha256", checksum, "text/plain");
+
+            Path modsDir = Files.createDirectories(gameDir.resolve("mods"));
+            Path currentJar = Files.writeString(modsDir.resolve("sequoia-0.1.0.jar"), "installed mod jar");
+            Path finalJar = modsDir.resolve("sequoia-0.1.1.jar");
+            try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+                TestableUpdateManager manager = newHttpManager(executor, server.uri("/releases/latest"), gameDir);
+                manager.moveFailureDestination = finalJar;
+
+                RuntimeException error = assertThrows(
+                        RuntimeException.class,
+                        () -> manager.applyRelease(
+                                release("v0.1.1", server.uri("/downloads/sequoia-0.1.1.jar"),
+                                        server.uri("/downloads/sequoia-0.1.1.jar.sha256")),
+                                false));
+
+                assertEquals("Replacement move failed", UpdateManager.rootCauseMessage(error));
+                assertEquals("installed mod jar", Files.readString(currentJar));
+                assertFalse(Files.exists(finalJar));
+                assertArrayEquals(jarBytes, Files.readAllBytes(
+                        gameDir.resolve("updates").resolve("sequoia-0.1.1.jar.download")));
+                assertEquals(0, manager.stopRequests.get());
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void applyReleaseRestoresExistingDestinationAfterPartialMoveFailure(
+            boolean existingDestination, @TempDir Path gameDir) throws Exception {
+        byte[] jarBytes = "fake-jar-binary".getBytes(StandardCharsets.UTF_8);
+        String checksum = sha256(jarBytes);
+
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.respondBytes("/downloads/sequoia-0.1.1.jar", jarBytes, "application/java-archive");
+            server.respondText("/downloads/sequoia-0.1.1.jar.sha256", checksum, "text/plain");
+
+            Path modsDir = Files.createDirectories(gameDir.resolve("mods"));
+            Path currentJar = Files.writeString(modsDir.resolve("sequoia-0.1.0.jar"), "installed mod jar");
+            Path finalJar = modsDir.resolve("sequoia-0.1.1.jar");
+            if (existingDestination) {
+                Files.writeString(finalJar, "previous replacement");
+            }
+            try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+                TestableUpdateManager manager = newHttpManager(executor, server.uri("/releases/latest"), gameDir);
+                manager.moveFailureDestination = finalJar;
+                manager.partialMoveFailure = true;
+
+                RuntimeException error = assertThrows(
+                        RuntimeException.class,
+                        () -> manager.applyRelease(
+                                release("v0.1.1", server.uri("/downloads/sequoia-0.1.1.jar"),
+                                        server.uri("/downloads/sequoia-0.1.1.jar.sha256")),
+                                false));
+
+                assertEquals("Replacement move failed", UpdateManager.rootCauseMessage(error));
+                assertEquals("installed mod jar", Files.readString(currentJar));
+                if (existingDestination) {
+                    assertEquals("previous replacement", Files.readString(finalJar));
+                } else {
+                    assertFalse(Files.exists(finalJar));
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void applyReleaseRecoversOrRetainsBackupWhenCleanupFailsAfterDeletion(
+            boolean rollbackFails, @TempDir Path gameDir) throws Exception {
+        byte[] jarBytes = "fake-jar-binary".getBytes(StandardCharsets.UTF_8);
+        String checksum = sha256(jarBytes);
+
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.respondBytes("/downloads/sequoia-0.1.1.jar", jarBytes, "application/java-archive");
+            server.respondText("/downloads/sequoia-0.1.1.jar.sha256", checksum, "text/plain");
+
+            Path modsDir = Files.createDirectories(gameDir.resolve("mods"));
+            Path currentJar = Files.writeString(modsDir.resolve("sequoia-0.1.0.jar"), "installed mod jar");
+            Path finalJar = modsDir.resolve("sequoia-0.1.1.jar");
+            try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+                TestableUpdateManager manager = newHttpManager(executor, server.uri("/releases/latest"), gameDir);
+                manager.cleanupFailureAfterDeleting = currentJar;
+                if (rollbackFails) {
+                    manager.moveFailureDestination = currentJar;
+                }
+
+                RuntimeException error = assertThrows(
+                        RuntimeException.class,
+                        () -> manager.applyRelease(
+                                release("v0.1.1", server.uri("/downloads/sequoia-0.1.1.jar"),
+                                        server.uri("/downloads/sequoia-0.1.1.jar.sha256")),
+                                false));
+
+                assertEquals("Stale jar cleanup failed", UpdateManager.rootCauseMessage(error));
+                assertFalse(Files.exists(finalJar));
+                if (rollbackFails) {
+                    assertFalse(Files.exists(currentJar));
+                    assertEquals(1, error.getCause().getSuppressed().length);
+                    try (var paths = Files.list(modsDir)) {
+                        List<Path> retained = paths.toList();
+                        assertEquals(1, retained.size());
+                        assertTrue(retained.getFirst().getFileName().toString().endsWith(".previous"));
+                        assertEquals("installed mod jar", Files.readString(retained.getFirst()));
+                    }
+                } else {
+                    assertEquals("installed mod jar", Files.readString(currentJar));
+                    try (var paths = Files.list(modsDir)) {
+                        assertEquals(List.of(currentJar), paths.toList());
+                    }
+                }
+                assertEquals(0, manager.stopRequests.get());
             }
         }
     }
@@ -700,6 +826,38 @@ class UpdateManagerTest {
     }
 
     @Test
+    void applyPendingInstallOnShutdownKeepsInstalledJarWhenReplacementMoveFails(@TempDir Path gameDir)
+            throws Exception {
+        byte[] jarBytes = "fake-jar-binary".getBytes(StandardCharsets.UTF_8);
+        String checksum = sha256(jarBytes);
+
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.respondBytes("/downloads/sequoia-0.1.1.jar", jarBytes, "application/java-archive");
+            server.respondText("/downloads/sequoia-0.1.1.jar.sha256", checksum, "text/plain");
+
+            Path modsDir = Files.createDirectories(gameDir.resolve("mods"));
+            Path currentJar = Files.writeString(modsDir.resolve("sequoia-0.1.0.jar"), "installed mod jar");
+            Path finalJar = modsDir.resolve("sequoia-0.1.1.jar");
+            TestableUpdateManager manager = newDirectManager(gameDir);
+            manager.windows = true;
+            manager.currentModJarPath = currentJar;
+            manager.applyRelease(
+                    release("v0.1.1", server.uri("/downloads/sequoia-0.1.1.jar"),
+                            server.uri("/downloads/sequoia-0.1.1.jar.sha256")),
+                    false);
+
+            manager.windows = false;
+            manager.moveFailureDestination = finalJar;
+            manager.applyPendingInstallOnShutdown();
+
+            assertEquals("installed mod jar", Files.readString(currentJar));
+            assertFalse(Files.exists(finalJar));
+            assertArrayEquals(jarBytes, Files.readAllBytes(
+                    gameDir.resolve("updates").resolve("sequoia-0.1.1.jar.pending")));
+        }
+    }
+
+    @Test
     void applyPendingInstallOnShutdownLaunchesWindowsHelper(@TempDir Path gameDir) throws Exception {
         byte[] jarBytes = "fake-jar-binary".getBytes(StandardCharsets.UTF_8);
         String checksum = sha256(jarBytes);
@@ -935,6 +1093,9 @@ class UpdateManagerTest {
         private volatile Path installedModJarPath;
         private volatile String javaExecutable;
         private volatile boolean useRealHelperLaunch;
+        private volatile Path moveFailureDestination;
+        private volatile boolean partialMoveFailure;
+        private volatile Path cleanupFailureAfterDeleting;
 
         private TestableUpdateManager(
                 HttpClient httpClient, ExecutorService executor, URI latestReleaseApi, Path gameDir) {
@@ -1033,6 +1194,28 @@ class UpdateManagerTest {
             if (useRealHelperLaunch) {
                 super.launchUpdateHelperProcess(javaExe, helperJar, modsDir, currentJar, pendingJar, finalJar);
             }
+        }
+
+        @Override
+        void moveAtomically(Path source, Path destination) throws IOException {
+            if (destination.equals(moveFailureDestination)) {
+                if (partialMoveFailure) {
+                    moveFailureDestination = null;
+                    Files.writeString(destination, "partial replacement");
+                    Files.deleteIfExists(source);
+                }
+                throw new IOException("Replacement move failed");
+            }
+            super.moveAtomically(source, destination);
+        }
+
+        @Override
+        void deleteExistingSequoiaJars(Iterable<Path> existingJars, Path installedJar) throws IOException {
+            if (cleanupFailureAfterDeleting != null) {
+                Files.deleteIfExists(cleanupFailureAfterDeleting);
+                throw new IOException("Stale jar cleanup failed");
+            }
+            super.deleteExistingSequoiaJars(existingJars, installedJar);
         }
 
         @Override

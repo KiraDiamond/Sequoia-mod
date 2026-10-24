@@ -27,6 +27,8 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -324,8 +326,7 @@ public class UpdateManager implements NotificationAccessor {
                 return;
             }
 
-            deleteExistingSequoiaJars(modsDir);
-            moveAtomically(tempJar, finalJar);
+            installJar(tempJar, finalJar, modsDir);
 
             pendingRelease = null;
             statusLine = "Installed " + release.tagName() + ". Restart required.";
@@ -388,8 +389,7 @@ public class UpdateManager implements NotificationAccessor {
                 return;
             }
 
-            deleteExistingSequoiaJars(install.modsDir());
-            moveAtomically(install.pendingJar(), install.finalJar());
+            installJar(install.pendingJar(), install.finalJar(), install.modsDir());
             SeqClient.LOGGER.info("Applied pending update {} on shutdown", install.tagName());
         } catch (Exception e) {
             SeqClient.LOGGER.warn("Failed to apply pending shutdown update", e);
@@ -579,26 +579,62 @@ public class UpdateManager implements NotificationAccessor {
         return parseChecksum(checksumFile);
     }
 
-    private void deleteExistingSequoiaJars(Path modsDir) throws IOException {
-        try (Stream<Path> stream = Files.list(modsDir)) {
-            stream.filter(path -> path.getFileName().toString().startsWith("sequoia-"))
-                    .filter(path -> path.getFileName().toString().endsWith(".jar"))
-                    .forEach(path -> {
-                        try {
-                            Files.deleteIfExists(path);
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
-        } catch (RuntimeException e) {
-            if (e.getCause() instanceof IOException ioException) {
-                throw ioException;
+    private void installJar(Path downloadedJar, Path finalJar, Path modsDir) throws IOException {
+        Map<Path, Path> backups = new LinkedHashMap<>();
+        boolean replacementAttempted = false;
+        boolean retainBackups = false;
+        try {
+            try (Stream<Path> stream = Files.list(modsDir)) {
+                for (Path jar : stream
+                        .filter(path -> path.getFileName().toString().startsWith("sequoia-"))
+                        .filter(path -> path.getFileName().toString().endsWith(".jar"))
+                        .toList()) {
+                    Path backup = Files.createTempFile(modsDir, "seq-update-", ".previous");
+                    backups.put(jar, backup);
+                    Files.copy(jar, backup, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                }
             }
-            throw e;
+            replacementAttempted = true;
+            moveAtomically(downloadedJar, finalJar);
+            deleteExistingSequoiaJars(backups.keySet(), finalJar);
+        } catch (IOException failure) {
+            if (replacementAttempted) {
+                try {
+                    if (!backups.containsKey(finalJar)) {
+                        Files.deleteIfExists(finalJar);
+                    }
+                    for (Map.Entry<Path, Path> backup : backups.entrySet()) {
+                        moveAtomically(backup.getValue(), backup.getKey());
+                    }
+                } catch (IOException rollbackFailure) {
+                    retainBackups = true;
+                    failure.addSuppressed(rollbackFailure);
+                    SeqClient.LOGGER.warn("Failed to roll back update; retained jar backups {}", backups, rollbackFailure);
+                }
+            }
+            throw failure;
+        } finally {
+            if (!retainBackups) {
+                for (Path backup : backups.values()) {
+                    try {
+                        Files.deleteIfExists(backup);
+                    } catch (IOException cleanupFailure) {
+                        SeqClient.LOGGER.warn("Failed to remove update backup {}", backup, cleanupFailure);
+                    }
+                }
+            }
         }
     }
 
-    private void moveAtomically(Path source, Path destination) throws IOException {
+    void deleteExistingSequoiaJars(Iterable<Path> existingJars, Path installedJar) throws IOException {
+        for (Path jar : existingJars) {
+            if (!jar.equals(installedJar)) {
+                Files.deleteIfExists(jar);
+            }
+        }
+    }
+
+    void moveAtomically(Path source, Path destination) throws IOException {
         try {
             Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException ignored) {
