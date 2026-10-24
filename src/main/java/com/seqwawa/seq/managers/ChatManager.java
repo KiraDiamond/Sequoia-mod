@@ -12,6 +12,8 @@ import com.seqwawa.seq.accessors.NotificationAccessor;
 import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.events.DiscordChatEvent;
 import com.seqwawa.seq.integrations.WynntilsGuildRankAccess;
+import com.seqwawa.seq.integrations.WynntilsChatAccess;
+import java.util.function.BiFunction;
 import com.seqwawa.seq.integrations.WynntilsItemPreviewAccess;
 import com.seqwawa.seq.model.ChatItemPreview;
 import com.seqwawa.seq.model.RankPresentation;
@@ -579,6 +581,11 @@ public class ChatManager {
 
     static MutableComponent guildSenderLine(
             ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank) {
+        return guildSenderLine(msg, text, rank, WynntilsChatAccess::revealNickname);
+    }
+
+    static MutableComponent guildSenderLine(ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank,
+                                            BiFunction<Component, String, Component> reveal) {
         return RankGradientAnimation.batchRegistrations(() -> {
             MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildSenderPrefix());
             TextColor textColor = DiscordRankChatDecorator.inGameGuildChatTextColor();
@@ -597,8 +604,9 @@ public class ChatManager {
                                 .append(Component.literal("nickname is ").withStyle(ChatFormatting.GRAY))
                                 .append(Component.literal(name).withStyle(ChatFormatting.WHITE))));
             }
-            line.append(rank == null ? Component.literal(name).withStyle(identity)
-                    : DiscordRankChatDecorator.colouredName(name, rank, identity));
+            Component sender = Component.literal(name).withStyle(identity);
+            if (hasNickname) sender = reveal.apply(sender, msg.username());
+            line.append(rank == null ? sender : DiscordRankChatDecorator.colouredName(sender, rank, msg.username()));
             MutableComponent insignia = DiscordRankChatDecorator.guildInsignia(msg.username());
             if (insignia != null) line.append(insignia);
             return line.append(Component.literal(": ").withStyle(ChatFormatting.DARK_AQUA))

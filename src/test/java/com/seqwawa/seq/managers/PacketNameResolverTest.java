@@ -47,6 +47,39 @@ class PacketNameResolverTest {
         assertEquals("nunot", cached("Alias 0", Policy.ALIAS).username());
     }
 
+    @Test void revealedPairsUseOnlyTheAccountExplicitlyBoundByTheirHover() {
+        for (String display : List.of("catsfield/cat", "cat/catsfield", "catsfield / cat", "cat(catsfield)", "cat (catsfield)")) {
+            for (String tooltip : List.of("catsfield's nickname is cat", "cat's real name is catsfield")) {
+                var style = Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(Component.literal(tooltip)));
+                var result = resolve(Component.literal(display).withStyle(style), Policy.CHAT);
+                assertEquals("catsfield", result.username(), display);
+                assertEquals(Source.HOVER, result.source());
+            }
+        }
+    }
+    @Test void parenthesizedAccountsCannotHideContradictorySpeakerMetadata() {
+        for (String display : List.of("cat(catsfield)", "cat (catsfield)")) {
+            assertEquals("catsfield", resolve(Component.literal(display), Policy.CHAT).username());
+            var conflict = resolve(Component.literal(display).withStyle(hover("cat", "RaidKeeper")), Policy.CHAT);
+            assertEquals(State.AMBIGUOUS, conflict.state());
+            assertNull(conflict.username());
+            assertEquals(State.UNRESOLVED, resolve(Component.literal(display).withStyle(hover("cat", "RaidKeeper")),
+                    Policy.METADATA).state(), "Strict metadata fields must not infer revealed name formats");
+        }
+    }
+
+    @Test void slashNamesCannotBorrowUnrelatedOrConflictingReveals() {
+        Component unrelated = Component.empty().withStyle(hover("cat", "RaidKeeper"))
+                .append("catsfield/cat").append(": body");
+        var resolver = PacketNameResolver.from(unrelated);
+        assertEquals(State.AMBIGUOUS, resolver.resolve(0, 13, Policy.CHAT, "chat.speaker").state());
+        Component conflicting = Component.empty()
+                .append(Component.literal("catsfield/").withStyle(hover("cat", "catsfield")))
+                .append(Component.literal("cat").withStyle(hover("catsfield", "cat")));
+        assertEquals(State.AMBIGUOUS, resolve(conflicting, Policy.CHAT).state());
+        assertEquals(State.AMBIGUOUS, resolve(Component.literal("catsfield/cat"), Policy.CHAT).state());
+    }
+
     @Test void resolutionAndRenderingDoNotTeachAliases() {
         assertEquals("nunot", resolve(insertion("Some Nick", "nunot"), Policy.CHAT).username());
         assertEquals(State.UNRESOLVED, cached("Some Nick", Policy.ALIAS).state());

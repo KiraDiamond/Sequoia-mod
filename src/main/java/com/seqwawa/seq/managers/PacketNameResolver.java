@@ -1,6 +1,8 @@
 package com.seqwawa.seq.managers;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import com.seqwawa.seq.utils.PacketTextNormalizer;
 import java.util.UUID;
 import java.util.List;
@@ -71,12 +73,13 @@ public final class PacketNameResolver {
         String display = text.substring(start, end);
         Set<String> candidates = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         Set<String> insertions = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        Map<String, Boolean> hoverSubjects = new HashMap<>();
         Source source = Source.NONE;
         for (int i = start; i < end; i++) {
             MetaChar ch = characters.get(i);
             Owner hover = ch.hoverOwner();
             if (hover != null && ch.hoverRealName() != null &&
-                    (hoverIdentifiesDisplayName(ch.hoverText(), ch.hoverRealName(), display)
+                    (hoverSubjects.computeIfAbsent(ch.hoverText(), value -> hoverIdentifiesDisplayName(value, ch.hoverRealName(), display, policy))
                     || (hover.inside(start, end, text) && subjectless(ch.hoverText())))) {
                 candidates.add(ch.hoverRealName());
                 source = Source.HOVER;
@@ -170,9 +173,18 @@ public final class PacketNameResolver {
         return matcher.find() ? (matcher.group(1) == null ? matcher.group(2) : matcher.group(1)) : null;
     }
 
-    static boolean hoverIdentifiesDisplayName(String text, String username, String display) {
-        return text != null && (text.matches("(?i)" + Pattern.quote(display) + "'(?:s)? real (?:user)?name is\\s+" + Pattern.quote(username))
-                || text.matches("(?i)" + Pattern.quote(username) + "'(?:s)? nickname is\\s+" + Pattern.quote(display)));
+    private static boolean hoverIdentifiesDisplayName(String text, String username, String display, Policy policy) {
+        if (text == null) return false;
+        // Reveal formats retain a nickname-only hover subject beside the shown account.
+        // Keep hover and inline account evidence so contradictory reveals stay ambiguous.
+        for (String nickname : policy == Policy.METADATA ? new String[] {display} : new String[] {display, display.replaceFirst("(?i)^" + Pattern.quote(username) + "\\s*/\\s*", ""),
+                display.replaceFirst("(?i)\\s*/\\s*" + Pattern.quote(username) + "$", ""),
+                display.replaceFirst("\\s*\\([a-zA-Z0-9_]{3,16}\\)$", "")}) {
+            if (text.matches("(?i)" + Pattern.quote(nickname) + "'(?:s)? real (?:user)?name is\\s+" + Pattern.quote(username))
+                    || text.matches("(?i)" + Pattern.quote(username) + "'(?:s)? nickname is\\s+" + Pattern.quote(nickname)))
+                return true;
+        }
+        return false;
     }
 
     private static boolean subjectless(String text) {

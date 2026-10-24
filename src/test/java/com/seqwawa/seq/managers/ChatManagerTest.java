@@ -245,6 +245,35 @@ class ChatManagerTest {
     }
 
     @Test
+    void backendNicknameRevealsAreAppliedBeforeColouringWithoutChangingAttribution() {
+        RankPresentation gradient = new RankPresentation(new DiscordRank("rank.druid", "Druid", 92),
+                ColorRamp.of(List.of(0xFF0000, 0x0000FF)));
+        for (boolean ranked : List.of(false, true)) for (String mode : List.of("disabled", "prepend", "replace", "keep-own")) {
+            var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("catsfield", "cat", "test"),
+                    "test", ranked ? gradient : null, (name, account) -> {
+                        assertEquals("cat", name.getString());
+                        assertTrue(name.getSiblings().isEmpty(), "Reveal must see the complete nickname before gradient splitting");
+                        assertEquals("catsfield", account);
+                        return switch (mode) {
+                            case "prepend" -> Component.empty()
+                                    .append(Component.literal(account + "/").withStyle(name.getStyle().withItalic(false)))
+                                    .append(name);
+                            case "replace" -> Component.literal(account).withStyle(name.getStyle().withItalic(false));
+                            default -> name; // Disabled reveal and Wynntils' keep-own-nickname exemption.
+                        };
+                    });
+            String expected = switch (mode) { case "prepend" -> "catsfield/cat"; case "replace" -> "catsfield"; default -> "cat"; };
+            assertTrue(line.getString().endsWith(expected + ": test"));
+            var identity = ComponentTextEditor.flatten(line).stream()
+                    .filter(fragment -> "catsfield".equals(fragment.style().getInsertion())).toList();
+            assertEquals(expected, identity.stream().map(ComponentTextEditor.Fragment::text).reduce("", String::concat));
+            if (mode.equals("prepend")) assertFalse(identity.getFirst().style().isItalic());
+            if (mode.equals("prepend") || mode.equals("disabled") || mode.equals("keep-own"))
+                assertTrue(identity.getLast().style().isItalic());
+        }
+    }
+
+    @Test
     void forwardedGuildChatUsesGuildColorAndRealNicknameIdentity() {
         var previous = SeqClient.inGameGuildChatTextColorSetting;
         try {

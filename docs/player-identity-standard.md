@@ -27,7 +27,11 @@ persistence use that account; eligibility does not select another identity.
 - `ALIAS`: no plain-text account inference. `TRUNCATED` additionally permits unique
   prefix matches, only for the known truncated party sidebar surface.
 
-A slash format is usable only when exactly one side is a valid account candidate.
+A slash format needs either one account candidate or explicit hover evidence
+binding the complete account/nickname pair; two username-shaped halves alone
+remain ambiguous. Packet hooks handle attribution before Wynntils, while final
+styling preserves its revealed name components. Backend sender names invoke only
+its optional reveal feature (respecting its settings), before gradient splitting.
 A spaced/punctuated nickname is never sanitized into an account. Every person in a
 multi-person event gets their own range, even when their displayed names match.
 

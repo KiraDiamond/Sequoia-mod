@@ -1187,6 +1187,11 @@ public final class DiscordRankChatDecorator {
         return coloured;
     }
 
+    static Component colouredName(Component name, RankPresentation rank, String username) {
+        var fragments = ComponentTextEditor.flatten(name);
+        return rebuild(recolourName(fragments, 0, ComponentTextEditor.textOf(fragments).length(), rank, username));
+    }
+
     private static List<ComponentTextEditor.Fragment> recolourName(
             List<ComponentTextEditor.Fragment> fragments,
             int start,

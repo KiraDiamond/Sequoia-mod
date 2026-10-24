@@ -60,7 +60,11 @@ jobs:
             version_type="beta"
           fi
 
-          if [[ -z "$changelog" || "$changelog" == "$GITHUB_REF_NAME" ]]; then
+          generate_release_notes=true
+          if [[ "$changelog" == "[no-release-notes]" ]]; then
+            changelog=""
+            generate_release_notes=false
+          elif [[ -z "$changelog" || "$changelog" == "$GITHUB_REF_NAME" ]]; then
             changelog="GitHub release notes: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
           fi
 
@@ -69,6 +73,7 @@ jobs:
             echo "minecraft_version=${minecraft_version}"
             echo "version_number=${version_number}"
             echo "version_type=${version_type}"
+            echo "generate_release_notes=${generate_release_notes}"
             echo "changelog<<EOF"
             echo "${changelog}"
             echo "EOF"
@@ -85,7 +90,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.release_metadata.outputs.generate_release_notes == 'true' }}
           files: |
             build/libs/*.jar
             build/libs/*.jar.sha256

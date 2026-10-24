@@ -21,6 +21,8 @@ class WynntilsChatAccessTest {
                 error -> fail("Missing mod must not log an error", error));
         assertEquals("", access.lookup("Baptiste").join());
         assertDoesNotThrow(() -> access.post(null, null));
+        Component name = Component.literal("cat");
+        assertSame(name, access.reveal(name, "catsfield"));
     }
 
     @Test
@@ -56,6 +58,25 @@ class WynntilsChatAccessTest {
         assertEquals(List.of(message), messages);
         assertEquals(List.of(line), lines);
         assertEquals(1, resolutions.get());
+    }
+
+    @Test
+    void optionalRevealPreservesOriginalOnFailureAndDoesNotPostGeneralChatEvents() {
+        List<Throwable> failures = new ArrayList<>();
+        var access = new WynntilsChatAccess(() -> true, () -> new WynntilsChatAccess.Bridge() {
+            public CompletableFuture<String> lookupGuildTag(String username) { throw new AssertionError("No lookup"); }
+            public void postAddedLine(GuiMessage message, GuiMessage.Line line) { throw new AssertionError("No general event"); }
+            public Component revealNickname(Component name, String username) {
+                if (username.equals("broken")) throw new NoClassDefFoundError("RevealNicknamesFeature");
+                assertEquals("cat", name.getString());
+                return Component.empty().append(username + "/").append(name);
+            }
+        }, failures::add);
+        Component name = Component.literal("cat");
+        assertEquals("catsfield/cat", access.reveal(name, "catsfield").getString());
+        assertSame(name, access.reveal(name, "broken"));
+        assertSame(name, access.reveal(name, "broken"));
+        assertEquals(1, failures.size());
     }
 
     @Test

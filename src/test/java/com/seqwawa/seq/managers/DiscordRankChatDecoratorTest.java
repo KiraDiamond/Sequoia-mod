@@ -805,6 +805,46 @@ class DiscordRankChatDecoratorTest {
     }
 
     @Test
+    void preservesParenthesizedRevealTextColourAndNicknameStyle() {
+        for (String separator : List.of("", " ")) {
+            Style nickname = Style.EMPTY.withItalic(true).withInsertion("cat").withHoverEvent(
+                    new HoverEvent.ShowText(Component.literal("cat's real name is catsfield")));
+            Component original = Component.empty()
+                    .append(WynnPillGlyphs.encodePlainPill("STRATEGIST") + " ")
+                    .append(Component.literal("cat").withStyle(nickname))
+                    .append(Component.literal(separator + "(catsfield)").withStyle(Style.EMPTY.withColor(0xFF5555)))
+                    .append(": test");
+            Component decorated = DiscordRankChatDecorator.decorateGuildChat(original,
+                    account -> account.equals("catsfield") ? DRUID : null);
+            assertEquals(List.of("druid"), pillLabels(decorated));
+            assertTrue(decorated.getString().endsWith("cat" + separator + "(catsfield): test"));
+            var fragments = ComponentTextEditor.flatten(decorated);
+            assertEquals(0xFF5555, colorOfFragmentContaining(fragments, "(catsfield)"));
+            assertTrue(fragments.stream().filter(fragment -> "catsfield".equals(fragment.style().getInsertion()))
+                    .allMatch(fragment -> fragment.style().isItalic()));
+        }
+    }
+
+    @Test
+    void preservesWynntilsRevealedPairsWhileDecoratingTheRealAccount() {
+        for (String display : List.of("catsfield/cat", "cat/catsfield")) {
+            Style identity = Style.EMPTY.withInsertion("cat").withItalic(true).withHoverEvent(
+                    new HoverEvent.ShowText(Component.literal("§fcatsfield§7's nickname is §fcat")));
+            Component original = Component.empty()
+                    .append(WynnPillGlyphs.encodePlainPill("STRATEGIST") + " ")
+                    .append(Component.literal(display).withStyle(identity)).append(": test");
+            Component decorated = DiscordRankChatDecorator.decorateGuildChat(original,
+                    account -> account.equals("catsfield") ? DRUID : null);
+            assertEquals(List.of("druid"), pillLabels(decorated));
+            assertTrue(decorated.getString().endsWith(display + ": test"));
+            var name = ComponentTextEditor.flatten(decorated).stream()
+                    .filter(fragment -> "catsfield".equals(fragment.style().getInsertion())).toList();
+            assertEquals(display, name.stream().map(ComponentTextEditor.Fragment::text).reduce("", String::concat));
+            assertTrue(name.stream().allMatch(fragment -> identity.getHoverEvent().equals(fragment.style().getHoverEvent())));
+        }
+    }
+
+    @Test
     void resolvesTheLoggedUsernameSlashSpacedClassNickname() {
         Component message = guildLine("RECRUITER", "pat_crafter07/I Burger", null, "test");
 

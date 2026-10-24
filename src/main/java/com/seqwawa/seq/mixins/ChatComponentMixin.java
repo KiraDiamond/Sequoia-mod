@@ -31,7 +31,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * This is the last hop every chat line takes, since {@code addMessage(Component)}
  * delegates here, so it also covers messages Wynntils has already reformatted
  * (timestamps, nickname rendering), unlike the packet-level hook used by
- * {@link com.seqwawa.seq.managers.ChatManager}.
+ * {@link com.seqwawa.seq.managers.ChatManager}. Keep attribution at that early hook;
+ * styling must remain here because gradient splitting before Wynntils runs would
+ * prevent its nickname revealer from finding the complete nickname.
  */
 @Mixin(ChatComponent.class)
 public class ChatComponentMixin {
