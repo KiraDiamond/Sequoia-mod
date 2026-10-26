@@ -1883,6 +1883,7 @@ public class ConnectionManager extends WebSocketClient implements NotificationAc
 
     private void handleMessage(String message) {
         message = BridgeMedia.rewrite(message);
+        if (message == null) return;
         try {
             JsonObject json = GSON.fromJson(message, JsonObject.class);
             if (json == null || !json.has("type")) {

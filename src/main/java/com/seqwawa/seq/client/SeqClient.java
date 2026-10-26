@@ -896,7 +896,7 @@ public class SeqClient implements ClientModInitializer {
         // Network settings
         autoConnectSetting = new Setting.BooleanSetting("auto_connect", "network", true);
         showDiscordChatSetting = new Setting.BooleanSetting("show_discord_bridge", "chat", true);
-        ImagePreviewSettings.setting().setParentSetting(showDiscordChatSetting);
+        ImagePreviewSettings.mediaSetting().setParentSetting(showDiscordChatSetting);
         showPrivateMessageGuildTagsSetting = new Setting.BooleanSetting("show_private_message_guild_tags", "chat", true);
         announceAchievementsSetting = new Setting.BooleanSetting("announce_achievements", "chat", true);
         autoDisableWynntilsGearsharingSetting = GearSharingProtectionManager.createSetting();
@@ -1201,6 +1201,7 @@ public class SeqClient implements ClientModInitializer {
         getConfigManager().register(com.seqwawa.seq.map.WorldMapSettings.getInstance().gatheringNodeSourceSetting());
         getConfigManager().register(autoConnectSetting);
         getConfigManager().register(showDiscordChatSetting);
+        getConfigManager().register(ImagePreviewSettings.mediaSetting());
         getConfigManager().register(ImagePreviewSettings.setting());
         getConfigManager().register(showPrivateMessageGuildTagsSetting);
         getConfigManager().register(announceAchievementsSetting);

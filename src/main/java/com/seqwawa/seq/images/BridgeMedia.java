@@ -54,18 +54,36 @@ public final class BridgeMedia {
         return dot < 0 ? path : path.substring(0, dot);
     }
 
+    /** Returns null when hidden media leaves no chat message to deliver. */
     public static synchronized String rewrite(String payload) {
-        if (!ImagePreviewSettings.enabled()) return payload;
-        if (payload == null || payload.length() > 1_000_000 || !payload.contains("\"media_urls\"")) return payload;
+        boolean hidden = ImagePreviewSettings.hidden();
+        if (!hidden && !ImagePreviewSettings.enabled()) return payload;
+        if (payload == null || payload.length() > 1_000_000
+                || (!hidden && !payload.contains("\"media_urls\""))) return payload;
         try {
             var json = JsonParser.parseString(payload).getAsJsonObject();
             String type = json.get("type").getAsString();
-            if (!TYPES.contains(type) || !json.get("media_urls").isJsonArray()) return payload;
+            if (!TYPES.contains(type)) return payload;
+            if (hidden && type.equals("discord_media")) return null;
             boolean chat = type.equals("discord_chat");
             if (chat
                     && (!json.has("message")
                             || !json.get("message").isJsonPrimitive()
                             || !json.get("message").getAsJsonPrimitive().isString())) return payload;
+            if (hidden) {
+                var delivered = new ArrayList<String>();
+                if (json.has("media_urls") && json.get("media_urls").isJsonArray())
+                    for (var value : json.getAsJsonArray("media_urls"))
+                        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString())
+                            delivered.add(value.getAsString());
+                String message = json.get("message").getAsString();
+                String filtered = HiddenMedia.filter(message, delivered);
+                if (filtered.isBlank()) return null;
+                if (filtered.equals(message)) return payload;
+                json.addProperty("message", filtered);
+                return json.toString();
+            }
+            if (!json.has("media_urls") || !json.get("media_urls").isJsonArray()) return payload;
             var signed = new ArrayList<URI>();
             var klipy = new ArrayList<URI>();
             for (var value : json.getAsJsonArray("media_urls")) {

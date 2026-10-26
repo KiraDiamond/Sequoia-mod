@@ -2,6 +2,7 @@ package com.seqwawa.seq.images;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 import com.google.gson.JsonArray;
@@ -25,12 +26,14 @@ class BridgeMediaTest {
 
     @BeforeEach
     void reset() {
+        ImagePreviewSettings.mediaSetting().reset();
         ImagePreviewSettings.setting().setValue(true);
         BridgeMedia.clear();
     }
 
     @AfterEach
     void restoreSettings() {
+        ImagePreviewSettings.mediaSetting().reset();
         ImagePreviewSettings.setting().reset();
         BridgeMedia.clear();
     }
@@ -161,6 +164,27 @@ class BridgeMediaTest {
             String original = payload("discord_media", null, url);
             assertSame(original, BridgeMedia.rewrite(original), url);
         }
+    }
+
+    @Test
+    void hiddenMediaKeepsTextAndSuppressesMediaOnlyAndDelayedMessages() {
+        ImagePreviewSettings.mediaSetting().setValue(false);
+        assertEquals("hello", json(BridgeMedia.rewrite(payload("discord_chat", "hello\n<" + BARE + ">", SIGNED)))
+                .get("message").getAsString());
+        assertNull(BridgeMedia.rewrite(payload("discord_chat", BARE, SIGNED)));
+        assertNull(BridgeMedia.rewrite(payload("discord_chat", "", SIGNED)));
+        assertNull(BridgeMedia.rewrite(payload("discord_media", null, PROXY)));
+        assertNull(BridgeMedia.rewrite("{\"type\":\"discord_media\",\"username\":\"Alice\"}"));
+        assertEquals(URI.create(BARE), resolve(BARE), "hidden media must not populate the preview resolver");
+    }
+
+    @Test
+    void hiddenMediaAlsoFiltersChatWithoutMetadataButLeavesOtherEventsAlone() {
+        ImagePreviewSettings.mediaSetting().setValue(false);
+        String original = "{\"type\":\"discord_chat\",\"message\":\"hello " + PAGE + "\"}";
+        assertEquals("hello", json(BridgeMedia.rewrite(original)).get("message").getAsString());
+        String other = payload("guild_chat", BARE, SIGNED);
+        assertSame(other, BridgeMedia.rewrite(other));
     }
 
     @Test
