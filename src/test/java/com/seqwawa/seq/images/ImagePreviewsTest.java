@@ -15,14 +15,20 @@ import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.Style;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class ImagePreviewsTest {
     private static final String URL = "https://i.imgur.com/preview.gif";
 
+    @BeforeEach
+    void enablePreviews() {
+        ImagePreviewSettings.setting().setValue(true);
+    }
+
     @AfterEach
     void restoreSettings() {
-        ImagePreviewSettings.setting().setValue(true);
+        ImagePreviewSettings.setting().reset();
     }
 
     /** Styles of the runs whose text equals {@code text}. */

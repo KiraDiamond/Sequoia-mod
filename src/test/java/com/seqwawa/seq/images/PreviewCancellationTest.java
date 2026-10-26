@@ -20,7 +20,7 @@ class PreviewCancellationTest {
     @AfterEach
     void reset() {
         ImagePreviews.clear();
-        ImagePreviewSettings.setting().setValue(true);
+        ImagePreviewSettings.setting().reset();
     }
 
     private static URI link(String name) {

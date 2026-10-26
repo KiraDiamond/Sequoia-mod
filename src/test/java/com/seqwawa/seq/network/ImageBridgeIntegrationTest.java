@@ -59,7 +59,7 @@ class ImageBridgeIntegrationTest {
     void tearDown() throws Exception {
         handlerField.set(null, oldHandler);
         SeqClient.configManager = oldConfig;
-        ImagePreviewSettings.setting().setValue(true);
+        ImagePreviewSettings.setting().reset();
         BridgeMedia.clear();
     }
 

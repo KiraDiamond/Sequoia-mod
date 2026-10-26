@@ -378,9 +378,9 @@ Tier colours use the `achievement.bronze` through `achievement.mythril` theme ke
 
 ## Chat image previews
 
-Supported links in chat become **[View Image]** or **[View GIF]**: hover to preview, click to enlarge,
-shift-click to insert the URL. **Show image and GIF previews** (under Discord chat) turns the feature and all
-of its requests off.
+Previews are **off by default**. Enable **Show image and GIF previews** under Discord chat to opt in.
+Supported links in chat then become **[View Image]** or **[View GIF]**: hover to preview, click to enlarge,
+shift-click to insert the URL. Turning the setting off disables the feature and all of its requests.
 
 - **Sources:** HTTPS GIF, PNG and JPEG links from Discord, Tenor, Giphy, Imgur and Klipy, plus Klipy's MP4
   renditions of GIFs.

@@ -8,6 +8,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.net.URI;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,13 @@ class BridgeMediaTest {
 
     @BeforeEach
     void reset() {
+        ImagePreviewSettings.setting().setValue(true);
+        BridgeMedia.clear();
+    }
+
+    @AfterEach
+    void restoreSettings() {
+        ImagePreviewSettings.setting().reset();
         BridgeMedia.clear();
     }
 

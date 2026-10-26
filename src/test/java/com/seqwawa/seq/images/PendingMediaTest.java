@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class PendingMediaTest {
@@ -20,8 +21,14 @@ class PendingMediaTest {
     private static final URI SIGNED =
             URI.create("https://media.discordapp.net/attachments/1/2/test.gif?ex=abc&is=def&hm=123");
 
+    @BeforeEach
+    void enablePreviews() {
+        ImagePreviewSettings.setting().setValue(true);
+    }
+
     @AfterEach
     void clearBridge() {
+        ImagePreviewSettings.setting().reset();
         BridgeMedia.clear();
     }
 
