@@ -81,6 +81,10 @@ __attribute__((export_name("decode_media"))) int decode_media(uint8_t *data,int 
  if(!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6))name="gif";
  else if(!memcmp(data,"\x89PNG\r\n\x1a\n",8))name="png_pipe";
  else if(data[0]==255 && data[1]==216 && data[2]==255)name="jpeg_pipe";
+ else if(length>=12 && !memcmp(data,"RIFF",4) && !memcmp(data+8,"WEBP",4)) {
+  if(AV_RL32(data+4)!=(uint32_t)length-8)return -1;
+  name=length>=21 && !memcmp(data+12,"VP8X",4) && (data[20]&2)?"webp_anim":"webp_pipe";
+ }
  else if(length>=12 && !memcmp(data+4,"ftyp",4))name="mov";
  else return -1;
  av_log_set_callback(no_log);av_max_alloc(64*1024*1024);
@@ -95,14 +99,15 @@ __attribute__((export_name("decode_media"))) int decode_media(uint8_t *data,int 
  format->probesize=MAX_INPUT;format->max_analyze_duration=1000000;
  av_dict_set(&options,"protocol_whitelist","",0);
  av_dict_set(&options,"format_whitelist",name,0);
- av_dict_set(&options,"codec_whitelist","gif,png,mjpeg,h264",0);
+ av_dict_set(&options,"codec_whitelist","gif,png,mjpeg,h264,webp,webp_anim",0);
  if(avformat_open_input(&format,NULL,av_find_input_format(name),&options)<0)goto end;
  if(avformat_find_stream_info(format,NULL)<0 || format->nb_streams>16)goto end;
  int stream_index=av_find_best_stream(format,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
  if(stream_index<0)goto end;
  AVStream *stream=format->streams[stream_index];
  enum AVCodecID id=stream->codecpar->codec_id;
- if(id!=AV_CODEC_ID_GIF && id!=AV_CODEC_ID_PNG && id!=AV_CODEC_ID_MJPEG && id!=AV_CODEC_ID_H264)goto end;
+ if(id!=AV_CODEC_ID_GIF && id!=AV_CODEC_ID_PNG && id!=AV_CODEC_ID_MJPEG && id!=AV_CODEC_ID_H264
+  && id!=AV_CODEC_ID_WEBP && id!=AV_CODEC_ID_WEBP_ANIM)goto end;
  if(!dimensions(stream->codecpar->width,stream->codecpar->height))goto end;
  codec=avcodec_alloc_context3(avcodec_find_decoder(id));
  if(!codec || avcodec_parameters_to_context(codec,stream->codecpar)<0)goto end;

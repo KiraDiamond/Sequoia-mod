@@ -11,6 +11,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -138,6 +139,37 @@ class DecoderTest {
     }
 
     @Test
+    void webpPixelsAlphaAndLossyImagesDecodeThroughTheSandbox() throws Exception {
+        var lossless = ImageDecoder.decode(resource("/webp-lossless.webp"));
+        assertEquals(2, lossless.width());
+        assertEquals(2, lossless.height());
+        assertEquals(1, lossless.frames().size());
+        assertArrayEquals(new int[] {0xffff0000, 0x8000ff00, 0xff0000ff, 0}, lossless.frames().getFirst().argb());
+        var lossy = ImageDecoder.decode(resource("/webp-lossy.webp"));
+        assertEquals(8, lossy.width());
+        assertEquals(8, lossy.height());
+        int pixel = lossy.frames().getFirst().argb()[0];
+        assertEquals(255, pixel >>> 24);
+        assertTrue(((pixel >>> 16) & 255) > 230);
+        assertTrue(((pixel >>> 8) & 255) < 20);
+        assertTrue((pixel & 255) < 20);
+    }
+
+    @Test
+    void animatedWebpPreservesTimingAndComposesPartialFrames() throws Exception {
+        var animation = ImageDecoder.decode(resource("/webp-animated.webp"));
+        assertEquals(8, animation.width());
+        assertEquals(8, animation.height());
+        assertEquals(List.of(100, 200, 300), animation.frames().stream().map(ImageDecoder.Frame::durationMs).toList());
+        assertEquals(0xffff0000, animation.frames().get(0).argb()[7]);
+        assertEquals(0xffff0000, animation.frames().get(1).argb()[0]);
+        assertEquals(0xff0000ff, animation.frames().get(1).argb()[7]);
+        assertEquals(0xffff0000, animation.frames().get(2).argb()[0]);
+        assertEquals(0xff0000ff, animation.frames().get(2).argb()[7]);
+        assertEquals(0xff00ff00, animation.frames().get(2).argb()[63]);
+    }
+
+    @Test
     void unsupportedFormatsAreRejectedBeforeTheHelper() throws Exception {
         for (String text : List.of("<svg onload='attack()'/>", "<html>not a GIF</html>", "GIF90a fake", "PK fake"))
             assertThrows(IOException.class, () -> MediaFormat.identify(text.getBytes(StandardCharsets.UTF_8)), text);
@@ -150,6 +182,10 @@ class DecoderTest {
     @Test
     void malformedMediaFailsWithoutInternalDetails() throws Exception {
         byte[] klipy = resource("/klipy-report.mp4");
+        byte[] badRiff = resource("/webp-lossless.webp");
+        badRiff[4] ^= 1;
+        byte[] truncatedWebp = Arrays.copyOf(resource("/webp-animated.webp"), 21);
+        ByteBuffer.wrap(truncatedWebp).order(ByteOrder.LITTLE_ENDIAN).putInt(4, truncatedWebp.length - 8);
         for (byte[] media : new byte[][] {
             {(byte) 137, 80, 78, 71, 13, 10, 26, 10}, // PNG signature only
             ByteBuffer.allocate(16).putInt(Integer.MAX_VALUE).putInt(0x66747970).array(), // MP4 box size bomb
@@ -164,6 +200,9 @@ class DecoderTest {
                     .putInt(Integer.MAX_VALUE)
                     .array(),
             Arrays.copyOf(klipy, 100), // truncated MP4
+            badRiff, // WebP RIFF size mismatch
+            truncatedWebp, // truncated VP8X header with a matching RIFF size
+            resource("/webp-oversized.webp"),
             encode(new BufferedImage(4097, 1, BufferedImage.TYPE_INT_ARGB), "png") // oversized
         }) {
             var failure = assertThrows(IOException.class, () -> ImageDecoder.decode(media));

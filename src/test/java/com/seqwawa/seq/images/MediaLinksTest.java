@@ -25,6 +25,14 @@ class MediaLinksTest {
     }
 
     @Test
+    void webpUsesTheSameHttpsHostRestrictions() {
+        assertEquals(URI.create("https://i.imgur.com/a.webp?x=1"), MediaLinks.imageUri("https://i.imgur.com/a.webp?x=1"));
+        for (String url : List.of("https://other.example/a.webp", "http://i.imgur.com/a.webp",
+                "https://i.imgur.com.evil.test/a.webp", "https://i.imgur.com:444/a.webp"))
+            assertNull(MediaLinks.imageUri(url), url);
+    }
+
+    @Test
     void acceptsExactlyTheNumberedGiphyHosts() {
         for (int i = 0; i <= 4; i++) {
             String url = "https://media" + i + ".giphy.com/media/preview/giphy.gif";

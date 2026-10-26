@@ -24,8 +24,10 @@ final class MediaFormat {
             if (signature.equals("GIF87a") || signature.equals("GIF89a")) return "gif";
         }
         if (bytes[0] == (byte) 255 && bytes[1] == (byte) 216 && bytes[2] == (byte) 255) return "jpeg";
+        if (bytes.length >= 12 && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                && bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P') return "webp";
         if (bytes.length >= 12 && bytes[4] == 'f' && bytes[5] == 't' && bytes[6] == 'y' && bytes[7] == 'p')
             return "mp4";
-        throw new IOException("Unsupported media (use GIF, PNG or JPEG)");
+        throw new IOException("Unsupported media (use GIF, PNG, JPEG or WebP)");
     }
 }

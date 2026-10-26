@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compiles the decoder guest: FFmpeg (gif/png/mjpeg/h264 decoders, gif/png/jpeg/mov demuxers,
+# Compiles the decoder guest: FFmpeg (gif/png/mjpeg/h264/webp decoders and their demuxers,
 # swscale) and zlib, statically linked with native/wasm/decoder.c into one WebAssembly module.
 # Run it through native/guest.py, which downloads and authenticates the archives and provides
 # the pinned wasi-sdk first.
@@ -38,7 +38,7 @@ cd "$BUILD/$FFMPEG"
  --enable-cross-compile --target-os=none --arch=wasm32 --disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug \
  --disable-avdevice --disable-avfilter --disable-swresample --disable-network --disable-pthreads --disable-w32threads --disable-os2threads --disable-inline-asm --disable-x86asm \
  --enable-avcodec --enable-avformat --enable-avutil --enable-swscale --enable-zlib --disable-iconv \
- --enable-decoder=gif,png,mjpeg,h264 --enable-demuxer=gif,image_png_pipe,image_jpeg_pipe,mov --enable-parser=gif,png,mjpeg,h264 \
+ --enable-decoder=gif,png,mjpeg,h264,webp,webp_anim --enable-demuxer=gif,image_png_pipe,image_jpeg_pipe,mov,image_webp_pipe,webp_anim --enable-parser=gif,png,mjpeg,h264,webp \
  --extra-cflags="--target=wasm32-wasip1 -O2 $MAP -I$BUILD/prefix/include -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
  --extra-ldflags="--target=wasm32-wasip1 $LINK -L$BUILD/prefix/lib" --extra-libs="-lwasi-emulated-signal -lwasi-emulated-process-clocks" \
  --prefix="$BUILD/prefix"

@@ -84,6 +84,18 @@ class MediaDownloadTest {
     }
 
     @Test
+    void webpBytesAreAcceptedEvenWhenTheUrlHasAPngExtension() throws Exception {
+        byte[] webp;
+        try (var input = getClass().getResourceAsStream("/webp-lossless.webp")) {
+            webp = input.readAllBytes();
+        }
+        assertEquals("webp", MediaFormat.identify(webp));
+        assertArrayEquals(webp, MediaDownload.fetch(URI.create("https://media.discordapp.net/image.png"),
+                (uri, limit, end) -> new MediaDownload.Reply(200, null, webp), deadline()));
+        assertThrows(IOException.class, () -> MediaFormat.identify("RIFF0000WAVE".getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    @Test
     void mp4FromAnImageLinkIsRejected() {
         byte[] mp4 = {0, 0, 0, 12, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
         assertThrows(

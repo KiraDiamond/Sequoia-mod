@@ -390,7 +390,7 @@ shift-click to insert the URL. Turning the setting off disables the feature and 
 with previews off to see plain URLs, or turn it off to hide media links and media-only messages while
 keeping accompanying text and ordinary links. Hidden media makes no preview requests.
 
-- **Sources:** HTTPS GIF, PNG and JPEG links from Discord, Tenor, Giphy, Imgur and Klipy, plus Klipy's MP4
+- **Sources:** HTTPS GIF, PNG, JPEG and WebP links from Discord, Tenor, Giphy, Imgur and Klipy, plus Klipy's MP4
   renditions of GIFs.
 - **Privacy:** previews are fetched only from those hosts, which see your IP address as a browser would.
   Other hosts, redirects off the list, private addresses, bodies over 8 MiB and downloads over 20 seconds

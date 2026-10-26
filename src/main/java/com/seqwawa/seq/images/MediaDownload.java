@@ -178,7 +178,7 @@ final class MediaDownload {
         cancellation.check();
         checkDeadline(deadline);
         var request = new HttpGet(uri);
-        request.setHeader("Accept", "image/gif,image/png,image/jpeg,video/mp4,text/html;q=0.5");
+        request.setHeader("Accept", "image/gif,image/png,image/jpeg,image/webp,video/mp4,text/html;q=0.5");
         request.setHeader("Accept-Encoding", "identity");
         request.setHeader("Connection", "close");
         var watchdog = TIMER.schedule(request::cancel, Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);

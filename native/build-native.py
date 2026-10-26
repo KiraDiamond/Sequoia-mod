@@ -175,6 +175,17 @@ def verify():
         assert decode(scratch, media, prepared=True)[:2] == (0, pixels), "prepared helper decoded differently"
         code, out, err = decode(scratch, b"bad")
         assert code != 0 and not out, (code, len(out))
+        for name, dimensions in (("lossless", (2, 2, 1)), ("lossy", (8, 8, 1)), ("animated", (8, 8, 3))):
+            code, pixels, err = decode(scratch, (FIXTURE.parent / f"webp-{name}.webp").read_bytes())
+            assert code == 0, (name, err)
+            assert struct.unpack(">4I", pixels[:16]) == (0x53494D31, *dimensions), name
+            if name == "lossless":
+                assert pixels[20:] == struct.pack(">4I", 0xffff0000, 0x8000ff00, 0xff0000ff, 0), name
+            if name == "animated":
+                stride = 4 + 8 * 8 * 4
+                assert [struct.unpack_from(">I", pixels, 16 + i * stride)[0] for i in range(3)] == [100, 200, 300]
+        code, pixels, err = decode(scratch, (FIXTURE.parent / "webp-oversized.webp").read_bytes())
+        assert code != 0 and not pixels, "oversized WebP accepted"
         check_denials(scratch)
     if windows:
         run(sys.executable, str(ROOT / "native/tests/windows-cancellation.py"), str(broker),

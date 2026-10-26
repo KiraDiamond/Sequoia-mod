@@ -60,7 +60,7 @@ final class MediaLinks {
             URI uri = URI.create(token);
             if (!allowed(uri)) return null;
             String p = uri.getPath().toLowerCase(Locale.ROOT);
-            if (p.matches(".*\\.(gif|png|jpe?g)$") || isTenorPage(uri) || isKlipyPage(uri) || isKlipyVideo(uri))
+            if (p.matches(".*\\.(gif|png|jpe?g|webp)$") || isTenorPage(uri) || isKlipyPage(uri) || isKlipyVideo(uri))
                 return uri;
         } catch (IllegalArgumentException ignored) {
         }
