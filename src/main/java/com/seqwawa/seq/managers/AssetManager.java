@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.util.Enumeration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.imageio.ImageIO;
@@ -13,6 +15,9 @@ import lombok.Getter;
 import lombok.Setter;
 import net.minecraft.resources.Identifier;
 import com.seqwawa.seq.client.SeqClient;
+import com.seqwawa.seq.model.SeqBadge;
+import com.seqwawa.seq.model.SeqBadgeTier;
+import com.seqwawa.seq.model.SeqBadgeType;
 import com.seqwawa.seq.utils.rendering.UiImage;
 import com.seqwawa.seq.utils.rendering.UiRenderer;
 
@@ -49,10 +54,19 @@ public class AssetManager {
 
     public void getAssets() {
         try {
-            for (String file : ASSET_FILES) {
+            List<String> files = new ArrayList<>(List.of(ASSET_FILES));
+            for (SeqBadgeType type : SeqBadgeType.values()) {
+                for (SeqBadgeTier tier : SeqBadgeTier.values()) {
+                    if ((type == SeqBadgeType.TCC) != (tier == SeqBadgeTier.SINGLE)) continue;
+                    files.add(new SeqBadge(type, tier).textureId().getPath());
+                }
+            }
+            for (String file : files) {
                 int nameStart = file.lastIndexOf('/') + 1;
                 int extensionStart = file.lastIndexOf('.');
                 String assetName = file.substring(nameStart, extensionStart).toLowerCase(Locale.ROOT);
+                boolean badge = file.startsWith("textures/badges/");
+                if (badge) assetName = "badge:" + assetName;
 
                 String path = "assets/seq/" + file;
                 URL resource = AssetManager.class.getClassLoader().getResource(path);
@@ -61,7 +75,7 @@ public class AssetManager {
                 }
 
                 BufferedImage bufferedImage = ImageIO.read(resource);
-                Identifier identifier = SeqClient.getFileLocation("textures/icons/" + assetName);
+                Identifier identifier = SeqClient.getFileLocation(badge ? file : "textures/icons/" + assetName);
                 Asset asset = new Asset(identifier, bufferedImage, bufferedImage.getWidth(), bufferedImage.getHeight());
                 assetsMap.put(assetName, asset);
             }

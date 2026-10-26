@@ -29,7 +29,7 @@ If you are a Sequoia or allied guild member, the expected setup is simple: link 
 - Seq-only war planner with timed availability, shared five-player territory queues, exclusive 1–5 player parties, a shared Lead + three Eco board, and collaborative territory zones
 - Raid tracking and announcements
 - Per-player raid gambit counts parsed natively from the raid-start roster
-- Sequoia achievements: guild-raid completion counts ranked from Bronze to Mythril
+- Sequoia achievements: a badge gallery for raids, wars, professions, roles and raiding events
 - A playful Princess-mode guild-raid count, compact leaderboard, and numbered raid celebration
 - Interactive world map with gathering nodes analysis and active world events
 - World-event reward chest collection for per-event observed drop rates ([details](docs/world-event-loot.md))
@@ -63,7 +63,7 @@ Sequoia-only integrations for that session; later membership rejections stay sil
 
 - `/seq`: open the main menu with Partyfinder, Settings, Connection, Ingredients, and Map
 - `/seq p`: open the Sequoia party finder UI
-- `/seq achievement`: open your guild raid achievements
+- `/seq achievement`: open your raid, war, profession, role and badge achievements
 - `/seq map`: open the Sequoia world map
 - `/seq members`: open the guild members panel
 - `/seq war`: open the Seq-only war planner after the backend authorizes the current member
@@ -358,17 +358,21 @@ next allowed fetch of both the roster and the profiles.
 
 Open **Achievements** with `/seq achievement` or from the navigation sidebar.
 
-The screen uses Party Finder's compact rows and theme backgrounds, with a badge-colored ring around each icon.
-It shows one row per guild raid with the authenticated Minecraft account's completions,
-current tier, and progress toward the next tier, plus a combined line for all guild raids. Tiers run
-from Bronze to Mythril, each with its own theme colour; combined tiers require twice as many runs as
-a single-raid tier.
+The screen groups achievements into a responsive badge gallery with one to three columns,
+keeping the dark theme and tier-coloured badge rings. Raid, war, profession and role cards show
+the account's current status and, where applicable, progress toward the backend's next milestone.
+Hover a card for its details.
 
-Counts and current tiers come from the Sequoia backend. Progress follows the same Minecraft account
-across machines; linked alternate accounts retain separate totals. The backend counts recorded raid
-announcements from 14 August 2026 at 18:12:02 UTC onward. The mod keeps the thresholds needed to show
-the next target, polls periodically, and refreshes shortly after a locally detected completion. If
-there is no cached result and the backend is unavailable, the screen reports that state rather than
+Raiding events are static awards: each event has one card showing its earned tier or not-earned
+status, without a progress bar. Wartorn Palace keeps four tiers, Nexus of Light keeps three,
+and The Canyon Colossus has its existing untiered badge. Bundled event and insignia artwork is
+used when available; other cards retain the Sequoia tree icon.
+
+Counts, tiers, milestone targets and event awards come from the Sequoia backend. Progress follows
+the same Minecraft account across machines; linked alternate accounts retain separate totals.
+The backend counts recorded raid announcements from 14 August 2026 at 18:12:02 UTC onward.
+The mod polls periodically and refreshes shortly after a locally detected completion. If there
+is no cached result and the backend is unavailable, the screen reports that state rather than
 presenting missing data as zero completions.
 
 Tier colours use the `achievement.bronze` through `achievement.mythril` theme keys. See

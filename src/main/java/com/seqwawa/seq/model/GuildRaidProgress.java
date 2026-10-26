@@ -9,7 +9,12 @@ import java.util.List;
 public record GuildRaidProgress(
         @SerializedName("schema_version") int schemaVersion,
         Map<String, Entry> progress,
-        List<String> announcements) {
+        List<String> announcements,
+        List<Category> categories) {
+
+    public GuildRaidProgress(int schemaVersion, Map<String, Entry> progress, List<String> announcements) {
+        this(schemaVersion, progress, announcements, null);
+    }
 
     public GuildRaidProgress(int schemaVersion, Map<String, Entry> progress) {
         this(schemaVersion, progress, List.of());
@@ -26,9 +31,32 @@ public record GuildRaidProgress(
         }
     }
 
+    /** Sierra owns category order, current rank, targets and completion. Null value means unknown. */
+    public record Category(
+            String key,
+            String kind,
+            String label,
+            Long value,
+            boolean unknown,
+            @SerializedName("tier_label") String tierLabel,
+            String tier,
+            Milestone next,
+            boolean completed,
+            @SerializedName("max_value") Long maxValue,
+            @SerializedName("asset_key") String assetKey) {
+        public Category(String key, String kind, String label, Long value, boolean unknown,
+                String tierLabel, String tier, Milestone next, boolean completed) {
+            this(key, kind, label, value, unknown, tierLabel, tier, next, completed, null, null);
+        }
+    }
+
+    public record Milestone(String id, String label, long at, String tier) {}
+
     public GuildRaidProgress {
         progress = normalizeKeys(progress);
         announcements = announcements == null ? List.of() : List.copyOf(announcements);
+        // Null means a legacy/count-only response; [] means Sierra hid every category.
+        categories = categories == null ? null : List.copyOf(categories);
     }
 
     public int count(SeqRaid raid) {
