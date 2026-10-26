@@ -523,13 +523,14 @@ class ConnectionManagerTest {
     }
 
     @Test
-    void treasuryAuthResponseContainsOnlyTypeAndBackendNonce() {
+    void treasuryAuthResponseContainsOnlyTypeAndBothNonces() {
         var json = ConnectionManager.serializeTreasuryAuthResponse(
-                new TreasuryAuthResponse("7505801b-9e89-4ef8-a32e-8d55e2f4d011"));
+                new TreasuryAuthResponse("7505801b-9e89-4ef8-a32e-8d55e2f4d011", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"));
 
         assertEquals("treasury_auth_response", json.get("type").getAsString());
         assertEquals("7505801b-9e89-4ef8-a32e-8d55e2f4d011", json.get("nonce").getAsString());
-        assertEquals(2, json.size());
+        assertEquals(3, json.size());
+        assertEquals("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", json.get("client_nonce").getAsString());
         assertFalse(json.has("access_token"));
         assertFalse(json.has("minecraft_uuid"));
         assertFalse(json.has("username"));

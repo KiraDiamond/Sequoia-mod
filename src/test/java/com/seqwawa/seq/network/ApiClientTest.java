@@ -539,4 +539,15 @@ class ApiClientTest {
                 payload.getAsJsonArray("slots").get(1).getAsJsonObject().get("player_uuid").getAsString());
         assertTrue(payload.getAsJsonArray("slots").get(2).getAsJsonObject().get("player_uuid").isJsonNull());
     }
+    @org.junit.jupiter.api.Test
+    void minecraftCompletionSendsClientNonceWithoutMinecraftCredentials() {
+        var request = new com.seqwawa.seq.network.auth.MinecraftAuthCompleteRequest(
+                "challenge", "SyntheticPlayer", "client-proof-nonce");
+        var body = ApiClient.minecraftAuthCompleteBody(request);
+        org.junit.jupiter.api.Assertions.assertEquals(3, body.size());
+        org.junit.jupiter.api.Assertions.assertEquals("challenge", body.get("challenge_id").getAsString());
+        org.junit.jupiter.api.Assertions.assertEquals("SyntheticPlayer", body.get("username").getAsString());
+        org.junit.jupiter.api.Assertions.assertEquals("client-proof-nonce", body.get("client_nonce").getAsString());
+    }
+
 }
