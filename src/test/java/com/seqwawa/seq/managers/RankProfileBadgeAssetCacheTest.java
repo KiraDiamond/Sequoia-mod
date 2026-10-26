@@ -35,4 +35,17 @@ class RankProfileBadgeAssetCacheTest {
 
         assertFalse(RankProfileBadgeAssetCache.isValid(asset));
     }
+    @Test
+    void selectsTheUntieredTccAsset() {
+        var asset = new RankProfilesResponse.AssetDefinition("badge.tcc",
+                "https://assets.seqwawa.com/v1/" + "a".repeat(64) + "/tcc.png", "image/png", "a".repeat(64));
+        var catalog = new RankProfilesResponse.Catalog(java.util.List.of(), java.util.List.of(
+                new RankProfilesResponse.AwardDefinition("raid.tcc", "raid_badge", "TCC", null, "badge.tcc")),
+                java.util.List.of(asset));
+        org.junit.jupiter.api.Assertions.assertEquals(java.util.Map.of(
+                new com.seqwawa.seq.model.SeqBadge(com.seqwawa.seq.model.SeqBadgeType.TCC,
+                        com.seqwawa.seq.model.SeqBadgeTier.SINGLE), asset),
+                RankProfileBadgeAssetCache.supportedAssets(catalog));
+    }
+
 }

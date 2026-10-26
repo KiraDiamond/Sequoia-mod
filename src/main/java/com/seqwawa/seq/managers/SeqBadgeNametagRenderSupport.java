@@ -27,7 +27,7 @@ final class SeqBadgeNametagRenderSupport {
 
     static boolean isBadgeTypeVisible(SeqBadgeType type) {
         return switch (type) {
-            case WTP, NOL -> showRaidBadges();
+            case WTP, NOL, TCC -> showRaidBadges();
             case INSIGNIA -> showInsigniaBadges();
         };
     }

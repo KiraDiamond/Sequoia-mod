@@ -2,6 +2,7 @@ package com.seqwawa.seq.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.Gson;
 import com.seqwawa.seq.model.GuildRaidProgress.Entry;
@@ -19,6 +20,30 @@ class GuildRaidProgressTest {
             "NOL":{"count":0,"tier":null},"TWP":{"count":0,"tier":null},\
             "total":{"count":19,"tier":null}}}
             """;
+
+    @Test
+    void readsSierraCategoriesAndNullableUnknownValues() {
+        GuildRaidProgress progress = GSON.fromJson("""
+                {"schema_version":1,"categories":[
+                  {"key":"profession:mining","kind":"profession","label":"Mining","value":null,
+                   "unknown":true,"completed":false},
+                  {"key":"war:completed","kind":"war","label":"Wars","value":3000000000,
+                   "unknown":false,"tier_label":"Veteran","tier":"gold",
+                   "next":{"id":"elite","label":"Elite","at":4000000000,"tier":"diamond"},
+                   "completed":false}]}
+                """, GuildRaidProgress.class);
+        assertNull(progress.categories().getFirst().value());
+        assertTrue(progress.categories().getFirst().unknown());
+        assertEquals(3_000_000_000L, progress.categories().getLast().value());
+        assertEquals("Veteran", progress.categories().getLast().tierLabel());
+        assertEquals(4_000_000_000L, progress.categories().getLast().next().at());
+    }
+
+    @Test
+    void distinguishesLegacyResponsesFromAnEmptyCatalog() {
+        assertNull(GSON.fromJson(BACKEND_PAYLOAD, GuildRaidProgress.class).categories());
+        assertTrue(GSON.fromJson("{\"categories\":[]}", GuildRaidProgress.class).categories().isEmpty());
+    }
 
     @Test
     void readsTheBackendPayload() {

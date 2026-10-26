@@ -12,14 +12,13 @@ import com.seqwawa.seq.utils.RankGradientAnimation;
 import com.seqwawa.seq.utils.WynncraftTextShaderColor;
 import com.seqwawa.seq.utils.WynnPillGlyphs;
 import java.util.ArrayDeque;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -115,16 +114,9 @@ public final class DiscordRankChatDecorator {
     /** Legacy formatting marker, which Wynncraft and add-ons embed straight in the text. */
     private static final char LEGACY_FORMATTING_PREFIX = '§';
 
-    private static final Pattern USERNAME_PATTERN = Pattern.compile("[a-zA-Z0-9_]{3,16}");
     /** Wynntils renders nicked players as {@code Nickname(RealUsername)}. */
-    private static final Pattern NICKNAME_WITH_USERNAME_PATTERN =
-            Pattern.compile("\\(([a-zA-Z0-9_]{3,16})\\)\\s*$");
     /** Account name before a slash, allowing the nickname after it to contain spaces. */
-    private static final Pattern USERNAME_BEFORE_SLASH_PATTERN =
-            Pattern.compile("^\\s*([a-zA-Z0-9_]{3,16})\\s*/");
     /** Account name after a slash, allowing the nickname before it to contain spaces. */
-    private static final Pattern USERNAME_AFTER_SLASH_PATTERN =
-            Pattern.compile("/\\s*([a-zA-Z0-9_]{3,16})\\s*$");
 
     private static volatile boolean debug;
     private static boolean suppressed;
@@ -181,7 +173,12 @@ public final class DiscordRankChatDecorator {
             } else {
                 try {
                     decorated = decorateSupportedChat(
-                            message, service::presentationForMinecraftUsername, guildCandidate, partyCandidate);
+                            message,
+                            service::presentationForVerifiedMinecraftUsername,
+                            service::presentationForVerifiedMinecraftUsername,
+                            guildCandidate,
+                            partyCandidate,
+                            SequoiaGuildMembership.getInstance()::isMember);
                     logInspection(
                             message,
                             decorated == message
@@ -201,10 +198,28 @@ public final class DiscordRankChatDecorator {
             Function<String, RankPresentation> rankLookup,
             boolean guildCandidate,
             boolean partyCandidate) {
+        return decorateSupportedChat(message, rankLookup, rankLookup, guildCandidate, partyCandidate, username -> true);
+    }
+
+    static Component decorateSupportedChat(
+            Component message,
+            Function<String, RankPresentation> guildRankLookup,
+            Function<String, RankPresentation> partyRankLookup,
+            boolean guildCandidate,
+            boolean partyCandidate,
+            Predicate<String> sequoiaMember) {
         if (partyCandidate) {
-            return partyChatColoringEnabled() ? decoratePartyChat(message, rankLookup) : message;
+            return partyChatColoringEnabled() ? decoratePartyChat(message, partyRankLookup) : message;
         }
-        return guildCandidate ? decorateGuildChat(message, rankLookup) : message;
+        return guildCandidate
+                ? decorateGuildChat(message, username -> guildRank(username, guildRankLookup, sequoiaMember))
+                : message;
+    }
+
+    /** Rank alone is insufficient: Discord members and aliases can belong to another game guild. */
+    static RankPresentation guildRank(
+            String username, Function<String, RankPresentation> rankLookup, Predicate<String> sequoiaMember) {
+        return sequoiaMember.test(username) ? rankLookup.apply(username) : null;
     }
 
     /** Party colouring is independently optional beneath general username colouring. */
@@ -224,7 +239,7 @@ public final class DiscordRankChatDecorator {
                 continue;
             }
 
-            Component rewritten = replaceBadge(fragments, text, pill, rankLookup, guildRank);
+            Component rewritten = replaceBadge(message, fragments, text, pill, rankLookup, guildRank);
             if (rewritten != null) {
                 return rewritten;
             }
@@ -254,7 +269,7 @@ public final class DiscordRankChatDecorator {
             return message;
         }
 
-        Speaker speaker = resolveSpeaker(rankLookup, fragments, text, nameStart);
+        Speaker speaker = resolveSpeaker(message, rankLookup, fragments, text, nameStart);
         if (speaker == null) {
             return message;
         }
@@ -316,6 +331,7 @@ public final class DiscordRankChatDecorator {
     }
 
     private static Component replaceBadge(
+            Component message,
             List<ComponentTextEditor.Fragment> fragments,
             String text,
             WynnPillGlyphs.Pill badge,
@@ -325,7 +341,7 @@ public final class DiscordRankChatDecorator {
         if (colonIndex < 0) {
             return null;
         }
-        Speaker speaker = resolveSpeaker(rankLookup, fragments, text, badge.endExclusive());
+        Speaker speaker = resolveSpeaker(message, rankLookup, fragments, text, badge.endExclusive());
         if (speaker == null) {
             return null;
         }
@@ -638,34 +654,16 @@ public final class DiscordRankChatDecorator {
      * never mistaken for the sender.
      */
     private static Speaker resolveSpeaker(
-            Function<String, RankPresentation> rankLookup,
-            List<ComponentTextEditor.Fragment> fragments,
-            String text,
-            int pillEnd) {
-        int colonIndex = text.indexOf(':', pillEnd);
-        if (colonIndex < 0) {
-            return null;
-        }
-
-        String displayedName = PacketTextNormalizer.normalizeForParsing(text.substring(pillEnd, colonIndex));
-        for (String candidate : speakerCandidates(fragments, text, pillEnd, colonIndex)) {
-            RankPresentation rank = rankLookup.apply(candidate);
-            if (rank != null) {
-                return new Speaker(
-                        candidate,
-                        rank,
-                        metadataCoversEmbeddedUsername(fragments, pillEnd, colonIndex, candidate));
-            }
-        }
-
-        String cachedUsername = NicknameResolverCache.resolveUsername(displayedName);
-        if (cachedUsername != null) {
-            RankPresentation cachedRank = rankLookup.apply(cachedUsername);
-            if (cachedRank != null) {
-                return new Speaker(cachedUsername, cachedRank, true);
-            }
-        }
-        return null;
+            Component message, Function<String, RankPresentation> rankLookup,
+            List<ComponentTextEditor.Fragment> fragments, String text, int pillEnd) {
+        int colon = text.indexOf(':', pillEnd);
+        if (colon < 0) return null;
+        var result = PacketNameResolver.from(message).resolveRaw(text, pillEnd, colon,
+                PacketNameResolver.Policy.CHAT, "chat.speaker");
+        if (result.username() == null) return null;
+        RankPresentation rank = rankLookup.apply(result.username());
+        return rank == null ? null : new Speaker(result.username(), rank,
+                metadataCoversEmbeddedUsername(fragments, pillEnd, colon, result.username()));
     }
 
     /**
@@ -683,8 +681,8 @@ public final class DiscordRankChatDecorator {
                 continue;
             }
 
-            String insertion = ChatManager.extractInsertionUsername(fragment.style());
-            String hovered = ChatManager.extractHoverRealUsername(fragment.style());
+            String insertion = PacketNameResolver.extractInsertionUsername(fragment.style());
+            String hovered = PacketNameResolver.extractHoverRealUsername(fragment.style());
             if (!username.equalsIgnoreCase(insertion == null ? "" : insertion)
                     && !username.equalsIgnoreCase(hovered == null ? "" : hovered)) {
                 continue;
@@ -717,67 +715,18 @@ public final class DiscordRankChatDecorator {
     /** The player a guild chat line belongs to, and the rank that was matched for them. */
     private record Speaker(String username, RankPresentation rank, boolean wholeDisplayName) {}
 
-    private static Set<String> speakerCandidates(
-            List<ComponentTextEditor.Fragment> fragments, String text, int regionStart, int regionEnd) {
-        Set<String> candidates = new LinkedHashSet<>();
-
-        String displayedName = PacketTextNormalizer.normalizeForParsing(text.substring(regionStart, regionEnd));
-        Matcher nicknameMatcher = NICKNAME_WITH_USERNAME_PATTERN.matcher(displayedName);
-        if (nicknameMatcher.find()) {
-            candidates.add(nicknameMatcher.group(1));
-        }
-        addSlashSeparatedCandidates(candidates, displayedName);
-        addUsernameCandidate(candidates, displayedName);
-
-        int cursor = 0;
-        for (ComponentTextEditor.Fragment fragment : fragments) {
-            int fragmentStart = cursor;
-            cursor += fragment.text().length();
-            if (cursor <= regionStart || fragmentStart >= regionEnd) {
-                continue;
-            }
-            addUsernameCandidate(candidates, ChatManager.extractHoverRealUsername(fragment.style()));
-            addUsernameCandidate(candidates, ChatManager.extractInsertionUsername(fragment.style()));
-        }
-
-        return candidates;
-    }
-
-    /**
-     * Offers both halves of a {@code username/nickname} name, the format add-ons use to
-     * show a nicked player without brackets.
-     * <p>
-     * Both sides are offered rather than picking one, because which half is the account
-     * name depends on the add-on and its settings. The roster decides: whichever half
-     * resolves to a member is the speaker, and a nickname that matches nobody costs
-     * only a failed lookup.
-     */
-    private static void addSlashSeparatedCandidates(Set<String> candidates, String displayedName) {
-        Matcher beforeSlash = USERNAME_BEFORE_SLASH_PATTERN.matcher(displayedName);
-        if (beforeSlash.find()) {
-            addUsernameCandidate(candidates, beforeSlash.group(1));
-        }
-
-        Matcher afterSlash = USERNAME_AFTER_SLASH_PATTERN.matcher(displayedName);
-        if (afterSlash.find()) {
-            addUsernameCandidate(candidates, afterSlash.group(1));
-        }
-    }
-
-    private static void addUsernameCandidate(Set<String> candidates, String candidate) {
-        if (candidate != null && USERNAME_PATTERN.matcher(candidate.trim()).matches()) {
-            candidates.add(candidate.trim());
-        }
-    }
-
     // ── Discord guild bridge ──
 
     static RankPresentation guildRank(String username) {
-        return isEnabled() ? DiscordRankService.getInstance().presentationForMinecraftUsername(username) : null;
+        return isEnabled()
+                ? guildRank(username, DiscordRankService.getInstance()::presentationForVerifiedMinecraftUsername,
+                        SequoiaGuildMembership.getInstance()::isMember)
+                : null;
     }
 
     static MutableComponent guildInsignia(String username) {
-        SeqBadgeTier tier = insigniaEnabled() ? insigniaOf(username) : null;
+        SeqBadgeTier tier = insigniaEnabled() && SequoiaGuildMembership.getInstance().isMember(username)
+                ? insigniaOf(username) : null;
         return tier == null ? null : insigniaBadge(tier);
     }
 
@@ -1238,6 +1187,11 @@ public final class DiscordRankChatDecorator {
         return coloured;
     }
 
+    static Component colouredName(Component name, RankPresentation rank, String username) {
+        var fragments = ComponentTextEditor.flatten(name);
+        return rebuild(recolourName(fragments, 0, ComponentTextEditor.textOf(fragments).length(), rank, username));
+    }
+
     private static List<ComponentTextEditor.Fragment> recolourName(
             List<ComponentTextEditor.Fragment> fragments,
             int start,
@@ -1344,11 +1298,9 @@ public final class DiscordRankChatDecorator {
         List<WynnPillGlyphs.Pill> pills = WynnPillGlyphs.findPills(text);
         String speakers = pills.stream()
                 .map(pill -> pill.label() + "->"
-                        + speakerCandidates(
-                                ComponentTextEditor.flatten(message),
-                                text,
-                                pill.endExclusive(),
-                                Math.max(pill.endExclusive(), indexOfColon(text, pill.endExclusive()))))
+                        + PacketNameResolver.from(message).resolveRaw(text, pill.endExclusive(),
+                                Math.max(pill.endExclusive(), indexOfColon(text, pill.endExclusive())),
+                                PacketNameResolver.Policy.CHAT, "chat.speaker"))
                 .toList()
                 .toString();
         SeqClient.LOGGER.info(

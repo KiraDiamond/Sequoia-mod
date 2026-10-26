@@ -87,7 +87,7 @@ class RankProfileRosterContractTest {
         DiscordRankService service = DiscordRankService.withIndex(index);
         assertEquals(
                 List.of(0x4CB4FA),
-                service.presentationForMinecraftUsername("BetaPlayer").colors().stops(),
+                service.presentationForVerifiedMinecraftUsername("BetaPlayer").colors().stops(),
                 "an absent display_colors field falls back to the progression catalog");
     }
 

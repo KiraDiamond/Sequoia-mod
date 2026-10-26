@@ -22,6 +22,17 @@ class RaidTrackerTest {
     }
 
     @Test
+    void changingAnotherMembersDisplayCannotChangeAnIdentity() {
+        for (String third : List.of("Carl", "Carl Jr")) {
+            Component message = Component.empty()
+                    .append(Component.literal("Alice").withStyle(Style.EMPTY.withInsertion("Bob")))
+                    .append(", Other, and ").append(third)
+                    .append(" finished The Canyon Colossus and claimed 2x Aspects, 2048x Emeralds, and +10367m Guild Experience");
+            assertEquals("Bob", RaidTracker.parseRaidCompletion(message).partyMembers().getFirst());
+        }
+    }
+
+    @Test
     void parseRaidCompletionHandlesSplitNamesAndRewards() {
         Component message = Component.empty()
                 .append(Component.literal("󏿼󐀆 "))
@@ -245,7 +256,7 @@ class RaidTrackerTest {
     }
 
     @Test
-    void parseRaidCompletionPrefersDisplayedUsernamesWhenAllDisplayedNamesAreValid() {
+    void parseRaidCompletionUsesNameOwnedInsertionConsistently() {
         Component message = Component.empty()
                 .append(Component.literal("Tannslee").withStyle(Style.EMPTY.withInsertion("eep")))
                 .append(Component.literal(", 99922, wisedrag, and nessabarrett finished The Canyon Colossus and claimed "
@@ -254,7 +265,7 @@ class RaidTrackerTest {
         RaidTracker.ParsedRaidCompletion parsed = RaidTracker.parseRaidCompletion(message);
 
         assertNotNull(parsed);
-        assertEquals(List.of("Tannslee", "99922", "wisedrag", "nessabarrett"), parsed.partyMembers());
+        assertEquals(List.of("eep", "99922", "wisedrag", "nessabarrett"), parsed.partyMembers());
         assertEquals("The Canyon Colossus", parsed.raidName());
         assertEquals(10.367, parsed.guildExp(), 0.000001);
     }

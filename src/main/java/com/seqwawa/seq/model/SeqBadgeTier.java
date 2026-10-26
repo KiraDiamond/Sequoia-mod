@@ -3,6 +3,7 @@ package com.seqwawa.seq.model;
 import java.util.Locale;
 
 public enum SeqBadgeTier {
+    SINGLE("single"),
     BRONZE("bronze"),
     SILVER("silver"),
     GOLD("gold"),

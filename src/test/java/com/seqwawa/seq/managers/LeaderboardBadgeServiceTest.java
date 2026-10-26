@@ -77,4 +77,22 @@ class LeaderboardBadgeServiceTest {
     private static RankProfilesResponse.AssetDefinition asset(String key) {
         return new RankProfilesResponse.AssetDefinition(key, "https://assets.example/" + key, "image/png", key);
     }
+    @Test
+    void projectsUntieredTccOnceAndRejectsInvalidTierCombinations() {
+        var catalog = new RankProfilesResponse.Catalog(List.of(), List.of(
+                new RankProfilesResponse.AwardDefinition("raid.tcc", "raid_badge", "TCC", null, "badge.tcc"),
+                new RankProfilesResponse.AwardDefinition("invalid-tcc", "raid_badge", "TCC", "gold", "badge.tcc"),
+                new RankProfilesResponse.AwardDefinition("invalid-nol", "raid_badge", "NOL", null, "badge.tcc"),
+                new RankProfilesResponse.AwardDefinition("invalid-wtp", "raid_badge", "WTP", "single", "badge.tcc")),
+                List.of(asset("badge.tcc")));
+        var response = new RankProfilesResponse(1, catalog, List.of(new RankProfilesResponse.Profile(
+                new RankProfilesResponse.MinecraftIdentity(PLAYER_UUID, "Player"), List.of(),
+                List.of("raid.tcc", "raid.tcc", "invalid-tcc", "invalid-nol", "invalid-wtp"))));
+        assertEquals(Map.of(SeqBadgeType.TCC, SeqBadgeTier.SINGLE),
+                LeaderboardBadgeService.parseProfiles(response).get(PLAYER_UUID));
+        assertEquals(Map.of(SeqBadgeType.TCC, SeqBadgeTier.SINGLE),
+                LeaderboardBadgeService.parseProfilesByUsername(response).get("player"));
+        assertEquals(java.util.Set.of("raid.tcc"), LeaderboardBadgeService.badgeDefinitions(catalog).keySet());
+    }
+
 }

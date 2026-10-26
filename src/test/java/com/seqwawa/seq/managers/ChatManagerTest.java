@@ -23,9 +23,147 @@ import net.minecraft.network.chat.Style;
 import net.minecraft.network.chat.TextColor;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import com.seqwawa.seq.integrations.WynntilsGuildRankAccess;
 
 class ChatManagerTest {
+
+    @BeforeEach
+    void resetNicknameMappings() {
+        NicknameResolverCache.reset();
+    }
+
+    @Test
+    void relayRecognizesTheSameExplicitNameFormatsAsColouring() {
+        for (String display : List.of("Some Nick(nunot)", "nunot/Some Nick", "Some Nick/nunot"))
+            assertEquals("nunot", ChatManager.parseGuildMessage(Component.literal(display + ": hello")).username());
+        assertNull(ChatManager.parseGuildMessage(Component.literal("nunot/reyzhia: hello")));
+    }
+
+    @Test
+    void bankAccessMetadataCannotPoisonTheDepositorsChatIdentity() {
+        Component bank = Component.empty()
+                .append(Component.literal("cinfrascitizen"))
+                .append(Component.literal(" deposited 50x Liquid Emerald to the Guild Bank ("))
+                .append(Component.literal("Everyone").withStyle(Style.EMPTY.withInsertion("Everyone")))
+                .append(Component.literal(")"));
+        ChatManager.observeNicknameMappings(bank);
+        assertNull(IdentityTestSupport.resolve("Everyone"));
+        IdentityTestSupport.remember("cinfrascitizen", "Everyone");
+
+        Component chat = Component.literal("cinfrascitizen: in gbank leader");
+        ChatManager.observeNicknameMappings(chat);
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(chat, true);
+
+        assertNotNull(parsed);
+        assertEquals("cinfrascitizen", parsed.username());
+        assertNull(parsed.nickname());
+        assertEquals("https://mc-heads.net/avatar/cinfrascitizen/128", parsed.avatarUrl());
+        assertEquals("cinfrascitizen", GuildBankTracker.getInstance().parseEvent(bank).player());
+    }
+
+    @Test
+    void bankSentencesCannotBeLearnedAsNicknameRevealsWithOrWithoutSpacing() {
+        for (String opening : List.of(" (", "(")) {
+            ChatManager.observeNicknameMappings(Component.literal(
+                    "cinfrascitizen deposited 50x Liquid Emerald to the Guild Bank" + opening + "Everyone)"));
+
+            assertNull(IdentityTestSupport.resolve("cinfrascitizen"));
+            assertNull(IdentityTestSupport.resolve("cinfrascitizen deposited"));
+            assertNull(IdentityTestSupport.resolve(
+                    "cinfrascitizen deposited 50x Liquid Emerald to the Guild Bank"));
+        }
+    }
+
+    @Test
+    void chatDoesNotUseTruncatedNicknameMappings() {
+        IdentityTestSupport.remember("Long Cache Lookup Nickname", "nunot");
+
+        assertNull(ChatManager.parseGuildMessage(Component.literal("Long Cache Lookup: hello"), true));
+    }
+
+    @Test
+    void bodyAndOldCacheCannotTurnGaztheCatIntoRaidKeeper() {
+        IdentityTestSupport.remember("GaztheCat", "RaidKeeper");
+        Component message = Component.empty()
+                .append(Component.literal("GaztheCat").withStyle(Style.EMPTY.withInsertion("GaztheCat")))
+                .append(Component.literal(": tna 3/4 "))
+                .append(Component.literal("RaidKeeper").withStyle(Style.EMPTY.withInsertion("RaidKeeper")));
+        ChatManager.observeNicknameMappings(message);
+
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(message, true);
+
+        assertNotNull(parsed);
+        assertEquals("GaztheCat", parsed.username());
+        assertNull(parsed.nickname());
+        assertEquals("https://mc-heads.net/avatar/GaztheCat/128", parsed.avatarUrl());
+        assertNull(IdentityTestSupport.resolve("GaztheCat"));
+    }
+
+    @Test
+    void unrelatedBodyHoverDoesNotIdentifyOrCacheTheSpeaker() {
+        Style other = Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                Component.literal("OtherNick's real name is RaidKeeper")));
+        Component message = Component.empty().append(Component.literal("GaztheCat: hello "))
+                .append(Component.literal("OtherNick").withStyle(other));
+        ChatManager.observeNicknameMappings(message);
+
+        assertEquals("GaztheCat", ChatManager.parseGuildMessage(message, true).username());
+        assertNull(IdentityTestSupport.resolve("OtherNick"));
+    }
+
+    @Test
+    void inheritedHoverForAnotherNameCannotOverrideSpeakerInsertion() {
+        Component message = Component.empty().withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                        Component.literal("OtherNick's real name is RaidKeeper"))))
+                .append(Component.literal("GaztheCat").withStyle(Style.EMPTY.withInsertion("GaztheCat")))
+                .append(Component.literal(": tna 3/4 OtherNick"));
+        ChatManager.observeNicknameMappings(message);
+
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(message, true);
+
+        assertNotNull(parsed);
+        assertEquals("GaztheCat", parsed.username());
+        assertEquals("GaztheCat", IdentityTestSupport.resolve("GaztheCat"));
+    }
+
+    @Test
+    void conflictingSpeakerHoverIdentitiesAreNotRelayed() {
+        Component message = Component.empty()
+                .append(Component.literal("Split").withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                        Component.literal("Split Name's real name is nunot")))))
+                .append(Component.literal(" Name").withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                        Component.literal("Split Name's real name is reyzhia")))))
+                .append(Component.literal(": hello"));
+
+        assertNull(ChatManager.parseGuildMessage(message, true));
+    }
+
+    @Test
+    void nestedSpeakerMetadataStillResolvesAnUnstyledNickname() {
+        Component message = Component.empty()
+                .append(Component.empty().withStyle(Style.EMPTY.withInsertion("nunot"))
+                        .append(Component.literal("Rey"))
+                        .append(Component.literal("zhia")))
+                .append(Component.literal(": hello "))
+                .append(Component.literal("RaidKeeper").withStyle(Style.EMPTY.withInsertion("RaidKeeper")));
+
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(message);
+
+        assertNotNull(parsed);
+        assertEquals("nunot", parsed.username());
+        assertEquals("Reyzhia", parsed.nickname());
+    }
+
+    @Test
+    void legacySubjectlessHoverStillResolvesInsideTheSpeakerName() {
+        Component message = Component.empty()
+                .append(Component.literal("Legacy Nick").withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                        Component.literal("Real Username: nunot")))))
+                .append(Component.literal(": hello"));
+
+        assertEquals("nunot", ChatManager.parseGuildMessage(message).username());
+    }
 
     @Test
     void queueCommandsExtractOnlyLowercaseGuildShorthand() {
@@ -107,6 +245,35 @@ class ChatManagerTest {
     }
 
     @Test
+    void backendNicknameRevealsAreAppliedBeforeColouringWithoutChangingAttribution() {
+        RankPresentation gradient = new RankPresentation(new DiscordRank("rank.druid", "Druid", 92),
+                ColorRamp.of(List.of(0xFF0000, 0x0000FF)));
+        for (boolean ranked : List.of(false, true)) for (String mode : List.of("disabled", "prepend", "replace", "keep-own")) {
+            var line = ChatManager.guildSenderLine(new ConnectionManager.GuildChatMessage("catsfield", "cat", "test"),
+                    "test", ranked ? gradient : null, (name, account) -> {
+                        assertEquals("cat", name.getString());
+                        assertTrue(name.getSiblings().isEmpty(), "Reveal must see the complete nickname before gradient splitting");
+                        assertEquals("catsfield", account);
+                        return switch (mode) {
+                            case "prepend" -> Component.empty()
+                                    .append(Component.literal(account + "/").withStyle(name.getStyle().withItalic(false)))
+                                    .append(name);
+                            case "replace" -> Component.literal(account).withStyle(name.getStyle().withItalic(false));
+                            default -> name; // Disabled reveal and Wynntils' keep-own-nickname exemption.
+                        };
+                    });
+            String expected = switch (mode) { case "prepend" -> "catsfield/cat"; case "replace" -> "catsfield"; default -> "cat"; };
+            assertTrue(line.getString().endsWith(expected + ": test"));
+            var identity = ComponentTextEditor.flatten(line).stream()
+                    .filter(fragment -> "catsfield".equals(fragment.style().getInsertion())).toList();
+            assertEquals(expected, identity.stream().map(ComponentTextEditor.Fragment::text).reduce("", String::concat));
+            if (mode.equals("prepend")) assertFalse(identity.getFirst().style().isItalic());
+            if (mode.equals("prepend") || mode.equals("disabled") || mode.equals("keep-own"))
+                assertTrue(identity.getLast().style().isItalic());
+        }
+    }
+
+    @Test
     void forwardedGuildChatUsesGuildColorAndRealNicknameIdentity() {
         var previous = SeqClient.inGameGuildChatTextColorSetting;
         try {
@@ -116,7 +283,8 @@ class ChatManagerTest {
             assertTrue(WynnPillGlyphs.findPills(line.getString()).isEmpty());
             var identity = ComponentTextEditor.flatten(line).stream().filter(f -> f.text().equals("Nickname")).findFirst().orElseThrow().style();
             assertEquals("RealName", identity.getInsertion());
-            assertTrue(((HoverEvent.ShowText) identity.getHoverEvent()).value().getString().contains("RealName"));
+            assertEquals("RealName's nickname is Nickname",
+                    ((HoverEvent.ShowText) identity.getHoverEvent()).value().getString());
             assertFragmentColor(line, "hello", 0xA1B2C3);
             assertFragmentColor(ChatManager.guildContinuationLine("continued"), "continued", 0xA1B2C3);
         } finally {
@@ -313,12 +481,25 @@ class ChatManagerTest {
     @Test
     void observesNicknameMappingFromNonChatPacketMetadata() {
         Component message = Component.empty()
-                .append(Component.literal("DrBavaro").withStyle(Style.EMPTY.withInsertion("xmattypazox")))
+                .append(Component.literal("DrBavaro").withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowText(
+                        Component.literal("DrBavaro's real name is xmattypazox")))))
                 .append(Component.literal(" has given you 20% resistance."));
 
         ChatManager.observeNicknameMappings(message);
 
-        assertEquals("xmattypazox", NicknameResolverCache.resolveUsername("DrBavaro"));
+        assertEquals("xmattypazox", IdentityTestSupport.resolve("DrBavaro"));
+    }
+
+    @Test
+    void systemLabelsAndInheritedHoverCannotTeachUnrelatedNicknameMappings() {
+        Component message = Component.empty().withStyle(Style.EMPTY.withInsertion("Everyone")
+                        .withHoverEvent(new HoverEvent.ShowText(Component.literal("OtherNick's real name is RaidKeeper"))))
+                .append(Component.literal("cinfrascitizen"))
+                .append(Component.literal(" deposited 50x Liquid Emerald to the Guild Bank (Everyone)"));
+
+        ChatManager.observeNicknameMappings(message);
+
+        assertNull(IdentityTestSupport.resolve("cinfrascitizen"));
     }
 
     @Test
@@ -326,7 +507,28 @@ class ChatManagerTest {
         ChatManager.observeNicknameMappings(
                 Component.literal("DrBavaro(xmattypazox) has given you 20% resistance."));
 
-        assertEquals("xmattypazox", NicknameResolverCache.resolveUsername("DrBavaro"));
+        assertEquals("xmattypazox", IdentityTestSupport.resolve("DrBavaro"));
+    }
+
+    @Test
+    void parseGuildMessageUsesObservedNicknameMappingForAvatar() {
+        IdentityTestSupport.remember("Cache Lookup Nickname", "RealPlayer");
+
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
+                Component.literal("󏿼󐀆 Cache Lookup Nickname: hello"), true);
+
+        assertNotNull(parsed);
+        assertEquals("RealPlayer", parsed.username());
+        assertEquals("https://mc-heads.net/avatar/RealPlayer/128", parsed.avatarUrl());
+    }
+
+    @Test
+    void parseGuildMessageDoesNotCacheNormalizedNicknameAsRealUsername() {
+        ChatManager.ParsedMessage parsed = ChatManager.parseGuildMessage(
+                Component.literal("󏿼󐀆 NoCache Alias: hello"));
+
+        assertNull(parsed);
+        assertNull(IdentityTestSupport.resolve("NoCache Alias"));
     }
 
     @Test

@@ -12,12 +12,13 @@ import com.seqwawa.seq.accessors.NotificationAccessor;
 import com.seqwawa.seq.client.SeqClient;
 import com.seqwawa.seq.events.DiscordChatEvent;
 import com.seqwawa.seq.integrations.WynntilsGuildRankAccess;
+import com.seqwawa.seq.integrations.WynntilsChatAccess;
+import java.util.function.BiFunction;
 import com.seqwawa.seq.integrations.WynntilsItemPreviewAccess;
 import com.seqwawa.seq.model.ChatItemPreview;
 import com.seqwawa.seq.model.RankPresentation;
 import com.seqwawa.seq.network.ConnectionManager;
 import com.seqwawa.seq.network.WynncraftServerPolicy;
-import com.seqwawa.seq.utils.ChatIdentityResolver;
 import com.seqwawa.seq.utils.PacketTextNormalizer;
 import com.seqwawa.seq.utils.RankGradientAnimation;
 
@@ -25,10 +26,8 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -105,23 +104,10 @@ public class ChatManager {
     // display-name capture group. DOTALL so the message group captures across \n.
     // Packet-level normalization strips the icon/banner glyph spam before matching.
     private static final Pattern CHAT_PATTERN = Pattern.compile(
-            "^(?:<\\d+>\\s*)?([a-zA-Z0-9_][a-zA-Z0-9_ ]*[a-zA-Z0-9_]|[a-zA-Z0-9_]{3,16})\\s*:\\s*(.*)$",
+            "^\\s*(?:<\\d+>\\s*)?([a-zA-Z0-9_][a-zA-Z0-9_ /]*(?:\\([a-zA-Z0-9_]{3,16}\\))?)\\s*:\\s*(.*)$",
             Pattern.DOTALL);
-    private static final Pattern HOVER_REAL_NAME_PATTERN = Pattern.compile(
-            // Wynncraft/Wynntils formats: "<nick>'s real name is <username>" and
-            // "<nick>'s real username is <username>".
-            // Also accepts nicknames ending in 's' where Wynncraft uses "<nick>' real name
-            // is <username>"
-            // Wynntils may reverse the description to "<username>'s nickname is <nick>".
-            // Legacy format: "Real Username: <username>".
-            "(?:(?:'(?:s)? real (?:user)?name is|Real Username:)\\s*([a-zA-Z0-9_]{3,16})"
-                    + "|\\b([a-zA-Z0-9_]{3,16})'(?:s)? nickname is\\b)",
-            Pattern.CASE_INSENSITIVE);
-    private static final Pattern LEADING_NICKNAME_USERNAME_PATTERN = Pattern.compile(
-            "^(?:<\\d+>\\s*)?([a-zA-Z0-9_][a-zA-Z0-9_ ]*?)\\s*"
-                    + "\\(([a-zA-Z0-9_]{3,16})\\)(?=\\s|:|$)");
-    private static final Pattern DISPLAY_NAME_PATTERN =
-            Pattern.compile("[a-zA-Z0-9_][a-zA-Z0-9_ ]{0,63}");
+    private static final Pattern RESISTANCE_ACTOR = Pattern.compile(
+            "^\\s*(.+?) has given you \\d+% resistance[.!]?$", Pattern.CASE_INSENSITIVE);
     private static final Duration OUTGOING_DEDUPE_WINDOW = Duration.ofMillis(750);
     private static volatile String lastOutgoingKey;
     private static volatile Instant lastOutgoingAt = Instant.EPOCH;
@@ -261,7 +247,7 @@ public class ChatManager {
         if (!shouldRelayForLocalGuild())
             return;
 
-        ParsedMessage parsed = parseGuildMessage(message);
+        ParsedMessage parsed = parseGuildMessage(message, true);
         if (parsed == null)
             return;
 
@@ -289,51 +275,14 @@ public class ChatManager {
     }
 
     static void observeNicknameMappings(Component message) {
-        String cleaned = PacketTextNormalizer.normalizeForParsing(message == null ? null : message.getString());
-        Matcher inlineMatcher = LEADING_NICKNAME_USERNAME_PATTERN.matcher(cleaned);
-        if (inlineMatcher.find()) {
-            NicknameResolverCache.remember(inlineMatcher.group(1), inlineMatcher.group(2));
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        Matcher chat = CHAT_PATTERN.matcher(resolver.text());
+        if (chat.find()) resolver.observe(chat.start(1), chat.end(1), PacketNameResolver.Policy.CHAT, "chat.speaker");
+        else {
+            Matcher resistance = RESISTANCE_ACTOR.matcher(resolver.text());
+            if (resistance.matches()) resolver.observe(resistance.start(1), resistance.end(1),
+                    PacketNameResolver.Policy.CHAT, "resistance.actor");
         }
-
-        if (message != null) {
-            for (Component fragment : message.toFlatList()) {
-                String displayedName = PacketTextNormalizer.normalizeForParsing(fragment.getString()).trim();
-                if (!DISPLAY_NAME_PATTERN.matcher(displayedName).matches()) {
-                    continue;
-                }
-
-                String realUsername = extractHoverRealUsername(fragment.getStyle());
-                if (realUsername == null) {
-                    realUsername = extractInsertionUsername(fragment.getStyle());
-                }
-                if (realUsername != null) {
-                    NicknameResolverCache.remember(displayedName, realUsername);
-                }
-            }
-        }
-
-        Matcher matcher = CHAT_PATTERN.matcher(cleaned);
-        if (!matcher.find()) {
-            return;
-        }
-
-        String displayedName = matcher.group(1).trim();
-        String realUsername = findRealUsername(message, displayedName);
-        if (realUsername == null || !realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            SeqClient.LOGGER.debug(
-                    "[NicknameResolver] Chat observe no real username displayed='{}' real='{}' cleaned='{}'",
-                    displayedName,
-                    realUsername,
-                    cleaned);
-            return;
-        }
-
-        SeqClient.LOGGER.debug(
-                "[NicknameResolver] Chat observe displayed='{}' real='{}' cleaned='{}'",
-                displayedName,
-                realUsername,
-                cleaned);
-        NicknameResolverCache.remember(displayedName, realUsername);
     }
 
     private static boolean shouldRelayForLocalGuild() {
@@ -386,8 +335,12 @@ public class ChatManager {
      * the component with a valid username insertion to identify the speaker.
      */
     static ParsedMessage parseGuildMessage(Component message) {
-        String cleaned = PacketTextNormalizer.normalizeForParsing(message == null ? null : message.getString());
-        Matcher matcher = CHAT_PATTERN.matcher(cleaned);
+        return parseGuildMessage(message, false);
+    }
+
+    static ParsedMessage parseGuildMessage(Component message, boolean useCachedNickname) {
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        Matcher matcher = CHAT_PATTERN.matcher(resolver.text());
 
         if (!matcher.find())
             return null;
@@ -404,31 +357,17 @@ public class ChatManager {
         if (content.isEmpty())
             return null;
 
-        // Search the component tree for the real username. Prefer candidates that
-        // differ from the displayed nickname (e.g. nicked/decorated names).
-        String realUsername = findRealUsername(message, displayedName);
-        String avatarUsername = resolveAvatarUsername(displayedName, realUsername);
-        if (avatarUsername == null) {
-            SeqClient.LOGGER.warn(
-                    "[GuildChat] Dropping guild chat: no avatar-safe username displayed='{}' real='{}'",
-                    displayedName,
-                    realUsername);
+        var identity = resolver.resolve(matcher.start(1), matcher.end(1),
+                PacketNameResolver.Policy.CHAT, "chat.speaker", useCachedNickname);
+        String senderUsername = identity.username();
+        if (senderUsername == null) {
+            SeqClient.LOGGER.debug("[GuildChat] Unresolved sender: {}", identity);
             return null;
         }
-
-        if (!avatarUsername.equals(displayedName) && realUsername == null) {
-            SeqClient.LOGGER.debug(
-                    "[GuildChat] Using normalized fallback username='{}' from displayed='{}'",
-                    avatarUsername,
-                    displayedName);
-        }
-
         String avatarUrl = "https://mc-heads.net/avatar/"
-                + URLEncoder.encode(avatarUsername, StandardCharsets.UTF_8).replace("+", "%20")
-                + "/128";
-        String nickname = deriveNickname(displayedName, avatarUsername);
-        NicknameResolverCache.remember(displayedName, avatarUsername);
-        return new ParsedMessage(avatarUsername, nickname, content, avatarUrl, itemPreviewResult.previews());
+                + URLEncoder.encode(senderUsername, StandardCharsets.UTF_8).replace("+", "%20") + "/128";
+        String nickname = deriveNickname(displayedName, senderUsername);
+        return new ParsedMessage(senderUsername, nickname, content, avatarUrl, itemPreviewResult.previews());
     }
 
     private static String extractRawContent(String rawText) {
@@ -477,12 +416,14 @@ public class ChatManager {
     }
 
     static ParsedGuildMembershipEvent parseGuildMembershipEvent(Component message, String localUsername) {
-        String normalized = PacketTextNormalizer.normalizeForParsing(message == null ? null : message.getString());
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        String normalized = resolver.text();
         if (normalized.isEmpty() || parseGuildMessage(message) != null) {
             return null;
         }
 
-        String systemMessage = normalized.replaceFirst("(?i)^\\[guild]\\s*", "");
+        String systemMessage = normalized.trim().replaceFirst("(?i)^\\[guild]\\s*", "");
+        int offset = normalized.indexOf(systemMessage);
         Matcher actorFirst = GUILD_MEMBERSHIP_ACTOR_FIRST_PATTERN.matcher(systemMessage);
         if (actorFirst.matches()) {
             String actor = actorFirst.group("actor");
@@ -491,47 +432,26 @@ public class ChatManager {
             }
             return guildMembershipEvent(
                     actorFirst.group("verb"),
-                    resolveGuildMembershipUsername(message, actor),
-                    resolveGuildMembershipUsername(message, actorFirst.group("target")));
+                    "you".equalsIgnoreCase(actorFirst.group("actor")) ? localUsername : resolvePerson(resolver, actorFirst.start("actor") + offset, actorFirst.end("actor") + offset, "membership.actor"),
+                    resolvePerson(resolver, actorFirst.start("target") + offset, actorFirst.end("target") + offset, "membership.target"));
         }
 
         Matcher targetFirst = GUILD_MEMBERSHIP_TARGET_FIRST_PATTERN.matcher(systemMessage);
         if (targetFirst.matches()) {
             return guildMembershipEvent(
                     targetFirst.group("verb"),
-                    resolveGuildMembershipUsername(message, targetFirst.group("actor")),
-                    resolveGuildMembershipUsername(message, targetFirst.group("target")));
+                    resolvePerson(resolver, targetFirst.start("actor") + offset, targetFirst.end("actor") + offset, "membership.actor"),
+                    resolvePerson(resolver, targetFirst.start("target") + offset, targetFirst.end("target") + offset, "membership.target"));
         }
         return null;
     }
 
-    private static String resolveGuildMembershipUsername(Component message, String displayedName) {
-        if (displayedName == null) {
-            return null;
-        }
-        String normalizedDisplayName = displayedName.trim();
-        if (message != null) {
-            for (Component fragment : message.toFlatList()) {
-                String fragmentText = PacketTextNormalizer.normalizeForParsing(fragment.getString()).trim();
-                if (!normalizedDisplayName.equalsIgnoreCase(fragmentText)) {
-                    continue;
-                }
-                String username = extractHoverRealUsername(fragment.getStyle());
-                if (username == null) {
-                    username = extractInsertionUsername(fragment.getStyle());
-                }
-                if (ChatIdentityResolver.isValidUsername(username)) {
-                    return username;
-                }
-            }
-        }
-
-        String cachedUsername = NicknameResolverCache.resolveUsername(normalizedDisplayName);
-        return ChatIdentityResolver.isValidUsername(cachedUsername) ? cachedUsername : normalizedDisplayName;
+    private static String resolvePerson(PacketNameResolver resolver, int start, int end, String role) {
+        return resolver.resolve(start, end, PacketNameResolver.Policy.CHAT, role).username();
     }
 
     private static ParsedGuildMembershipEvent guildMembershipEvent(String verb, String actor, String target) {
-        if (!ChatIdentityResolver.isValidUsername(actor) || !ChatIdentityResolver.isValidUsername(target)) {
+        if (!(PacketNameResolver.validUsername(actor) != null) || !(PacketNameResolver.validUsername(target) != null)) {
             return null;
         }
         String action;
@@ -582,22 +502,6 @@ public class ChatManager {
         return trimmed;
     }
 
-    private static String resolveAvatarUsername(String displayedName, String realUsername) {
-        if (realUsername != null && realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            return realUsername;
-        }
-        if (displayedName != null && displayedName.matches("[a-zA-Z0-9_]{3,16}")) {
-            return displayedName;
-        }
-
-        String normalized = displayedName == null ? "" : displayedName.replaceAll("[^a-zA-Z0-9_]", "");
-        if (normalized.matches("[a-zA-Z0-9_]{3,16}")) {
-            return normalized;
-        }
-
-        return null;
-    }
-
     private static boolean isDuplicateOutgoing(String username, String message) {
         String key = username + "\u0000" + message;
         Instant now = Instant.now();
@@ -644,154 +548,6 @@ public class ChatManager {
         }
     }
 
-    private static String findRealUsername(Component component, String displayedName) {
-        List<String> usernames = extractRealUsernames(component);
-        if (usernames.isEmpty()) {
-            return null;
-        }
-
-        if (displayedName == null || displayedName.isBlank()) {
-            return usernames.get(0);
-        }
-
-        String displayedTrimmed = displayedName.trim();
-        String displayedLower = displayedTrimmed.toLowerCase();
-
-        String bestPrefixExpansion = null;
-        for (String candidate : usernames) {
-            if (candidate == null) {
-                continue;
-            }
-            String candidateLower = candidate.toLowerCase();
-            if (candidateLower.equals(displayedLower)) {
-                continue;
-            }
-            if (candidateLower.startsWith(displayedLower)
-                    && candidate.length() > displayedTrimmed.length()
-                    && (bestPrefixExpansion == null || candidate.length() > bestPrefixExpansion.length())) {
-                bestPrefixExpansion = candidate;
-            }
-        }
-        if (bestPrefixExpansion != null) {
-            return bestPrefixExpansion;
-        }
-
-        for (String candidate : usernames) {
-            if (candidate != null && !candidate.equalsIgnoreCase(displayedTrimmed)) {
-                return candidate;
-            }
-        }
-
-        return usernames.get(0);
-    }
-
-    static String resolvePacketUsername(Component component, String displayedName) {
-        String realUsername = findRealUsername(component, displayedName);
-        if (realUsername != null && realUsername.matches("[a-zA-Z0-9_]{3,16}")) {
-            return realUsername;
-        }
-        if (displayedName != null && displayedName.matches("[a-zA-Z0-9_]{3,16}")) {
-            return displayedName;
-        }
-        return null;
-    }
-
-    public static List<String> extractRealUsernames(Component component) {
-        if (component == null) {
-            return List.of();
-        }
-
-        Set<String> usernames = new LinkedHashSet<>();
-        collectHoverRealUsernames(component, usernames);
-        collectInsertionUsernames(component, usernames);
-        return List.copyOf(new ArrayList<>(usernames));
-    }
-
-    public static List<String> extractHoverRealUsernames(Component component) {
-        if (component == null) {
-            return List.of();
-        }
-
-        Set<String> usernames = new LinkedHashSet<>();
-        collectHoverRealUsernames(component, usernames);
-        return List.copyOf(new ArrayList<>(usernames));
-    }
-
-    public static List<String> extractInsertionUsernames(Component component) {
-        if (component == null) {
-            return List.of();
-        }
-
-        Set<String> usernames = new LinkedHashSet<>();
-        collectInsertionUsernames(component, usernames);
-        return List.copyOf(new ArrayList<>(usernames));
-    }
-
-    private static void collectHoverRealUsernames(Component component, Set<String> usernames) {
-        if (component == null) {
-            return;
-        }
-
-        String hoverUsername = extractHoverRealUsername(component.getStyle());
-        if (hoverUsername != null) {
-            usernames.add(hoverUsername);
-        }
-
-        for (Component sibling : component.getSiblings()) {
-            collectHoverRealUsernames(sibling, usernames);
-        }
-    }
-
-    private static void collectInsertionUsernames(Component component, Set<String> usernames) {
-        if (component == null) {
-            return;
-        }
-
-        String insertionUsername = extractInsertionUsername(component.getStyle());
-        if (insertionUsername != null) {
-            usernames.add(insertionUsername);
-        }
-
-        for (Component sibling : component.getSiblings()) {
-            collectInsertionUsernames(sibling, usernames);
-        }
-    }
-
-    static String extractHoverRealUsername(Style style) {
-        if (style == null) {
-            return null;
-        }
-
-        HoverEvent hoverEvent = style.getHoverEvent();
-        if (!(hoverEvent instanceof HoverEvent.ShowText showTextEvent)) {
-            return null;
-        }
-
-        Component hoverComponent = showTextEvent.value();
-        if (hoverComponent == null) {
-            return null;
-        }
-
-        String hoverText = PacketTextNormalizer.normalizeForParsing(hoverComponent.getString());
-        Matcher matcher = HOVER_REAL_NAME_PATTERN.matcher(hoverText);
-        if (!matcher.find()) {
-            return null;
-        }
-        return matcher.group(2) == null ? matcher.group(1) : matcher.group(2);
-    }
-
-    static String extractInsertionUsername(Style style) {
-        if (style == null) {
-            return null;
-        }
-
-        String insertion = style.getInsertion();
-        if (insertion == null || !insertion.matches("[a-zA-Z0-9_]{3,16}")) {
-            return null;
-        }
-        return insertion;
-    }
-
     // ── Incoming: backend → WS → MC chat ──
 
     private void registerIncomingHook() {
@@ -825,6 +581,11 @@ public class ChatManager {
 
     static MutableComponent guildSenderLine(
             ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank) {
+        return guildSenderLine(msg, text, rank, WynntilsChatAccess::revealNickname);
+    }
+
+    static MutableComponent guildSenderLine(ConnectionManager.GuildChatMessage msg, String text, RankPresentation rank,
+                                            BiFunction<Component, String, Component> reveal) {
         return RankGradientAnimation.batchRegistrations(() -> {
             MutableComponent line = Component.empty().append(DiscordRankChatDecorator.guildSenderPrefix());
             TextColor textColor = DiscordRankChatDecorator.inGameGuildChatTextColor();
@@ -839,12 +600,13 @@ public class ChatManager {
             if (!name.equals(msg.username())) {
                 identity = identity.withHoverEvent(new HoverEvent.ShowText(
                         Component.empty()
-                                .append(Component.literal(name + "'s ").withStyle(ChatFormatting.WHITE))
-                                .append(Component.literal("real name is ").withStyle(ChatFormatting.GRAY))
-                                .append(Component.literal(msg.username()).withStyle(ChatFormatting.WHITE))));
+                                .append(Component.literal(msg.username() + "'s ").withStyle(ChatFormatting.WHITE))
+                                .append(Component.literal("nickname is ").withStyle(ChatFormatting.GRAY))
+                                .append(Component.literal(name).withStyle(ChatFormatting.WHITE))));
             }
-            line.append(rank == null ? Component.literal(name).withStyle(identity)
-                    : DiscordRankChatDecorator.colouredName(name, rank, identity));
+            Component sender = Component.literal(name).withStyle(identity);
+            if (hasNickname) sender = reveal.apply(sender, msg.username());
+            line.append(rank == null ? sender : DiscordRankChatDecorator.colouredName(sender, rank, msg.username()));
             MutableComponent insignia = DiscordRankChatDecorator.guildInsignia(msg.username());
             if (insignia != null) line.append(insignia);
             return line.append(Component.literal(": ").withStyle(ChatFormatting.DARK_AQUA))

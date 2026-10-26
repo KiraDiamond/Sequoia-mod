@@ -1,10 +1,6 @@
 package com.seqwawa.seq.managers;
 
-import com.seqwawa.seq.utils.ChatIdentityResolver;
-import com.seqwawa.seq.utils.PacketTextNormalizer;
-import java.util.LinkedHashSet;
 import java.util.Locale;
-import java.util.Set;
 import java.util.regex.Pattern;
 import net.minecraft.network.chat.Component;
 
@@ -20,28 +16,22 @@ public final class GuildRankEventParser {
 
     public static Event parse(Component message, String localUsername) {
         if (message == null || ChatManager.parseGuildMessage(message) != null) return null;
-        String text = PacketTextNormalizer.normalizeForParsing(message.getString());
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        String text = resolver.text().trim();
+        int offset = resolver.text().indexOf(text);
         var matcher = MESSAGE.matcher(text);
         if (!matcher.matches()) return null;
-        return new Event(identity(message, matcher.group(1), localUsername),
-                identity(message, matcher.group(2), localUsername), rank(matcher.group(3)), rank(matcher.group(4)), text);
+        return new Event(identity(resolver, matcher.group(1), matcher.start(1) + offset, matcher.end(1) + offset, localUsername, "rank.actor"),
+                identity(resolver, matcher.group(2), matcher.start(2) + offset, matcher.end(2) + offset, localUsername, "rank.target"), rank(matcher.group(3)), rank(matcher.group(4)), text);
     }
 
-    private static Identity identity(Component message, String display, String localUsername) {
-        if ("you".equalsIgnoreCase(display) && ChatIdentityResolver.isValidUsername(localUsername)) {
+    private static Identity identity(PacketNameResolver resolver, String display, int start, int end,
+                                     String localUsername, String role) {
+        if ("you".equalsIgnoreCase(display) && (PacketNameResolver.validUsername(localUsername) != null))
             return new Identity(display, localUsername, "local_player");
-        }
-        Set<String> candidates = new LinkedHashSet<>();
-        for (Component fragment : message.toFlatList()) {
-            if (!display.equalsIgnoreCase(PacketTextNormalizer.normalizeForParsing(fragment.getString()))) continue;
-            String hover = ChatManager.extractHoverRealUsername(fragment.getStyle());
-            String insertion = ChatManager.extractInsertionUsername(fragment.getStyle());
-            if (ChatIdentityResolver.isValidUsername(hover)) candidates.add(hover.toLowerCase(Locale.ROOT));
-            if (ChatIdentityResolver.isValidUsername(insertion)) candidates.add(insertion.toLowerCase(Locale.ROOT));
-        }
-        if (candidates.size() == 1) return new Identity(display, candidates.iterator().next(), "component");
-        // Never use username syntax or a nickname prefix match as proof. Conflicting metadata stays unresolved.
-        return new Identity(display, null, "unresolved");
+        var result = resolver.resolve(start, end, PacketNameResolver.Policy.METADATA, role);
+        return new Identity(display, result.username() == null ? null : result.username().toLowerCase(Locale.ROOT),
+                result.username() != null ? "component" : "unresolved");
     }
 
     private static String rank(String value) {

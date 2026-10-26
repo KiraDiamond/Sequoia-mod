@@ -1,6 +1,5 @@
 package com.seqwawa.seq.managers;
 
-import com.seqwawa.seq.utils.ChatIdentityResolver;
 import com.seqwawa.seq.utils.PacketTextNormalizer;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -114,20 +113,14 @@ public final class RaidGambitRosterTracker {
 
     private static String resolveUsername(ItemStack stack) {
         Component hoverName = stack.getHoverName();
-        String fromHover = ChatIdentityResolver.findRealUsername(hoverName);
-        if (ChatIdentityResolver.isValidUsername(fromHover)) {
-            return fromHover;
-        }
-
         ResolvableProfile profile = stack.get(DataComponents.PROFILE);
         if (profile != null) {
-            String profileName = profile.name().orElse(null);
-            if (ChatIdentityResolver.isValidUsername(profileName)) {
-                return profileName;
-            }
+            return PacketNameResolver.profile(hoverName.getString(), profile.name().orElse(null),
+                    profile.partialProfile().id(), "raid.gambit").username();
         }
 
-        return ChatIdentityResolver.resolveCanonicalUsername(hoverName, hoverName.getString());
+        var resolver = PacketNameResolver.from(hoverName);
+        return resolver.resolve(0, resolver.text().length(), PacketNameResolver.Policy.CHAT, "raid.gambit").username();
     }
 
     record PlayerGambitObservation(String username, int gambitCount) {}

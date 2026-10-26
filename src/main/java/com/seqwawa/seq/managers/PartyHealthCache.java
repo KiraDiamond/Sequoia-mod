@@ -10,7 +10,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
-import net.minecraft.network.chat.Component;
 
 public final class PartyHealthCache {
     private static final long FULL_BAR_MAX_PROMOTION_DELAY_MS = 2_000;
@@ -50,9 +49,6 @@ public final class PartyHealthCache {
             }
 
             UUID uuid = resolveVisiblePlayerUuid(visiblePlayerUuids, member.username());
-            if (uuid == null) {
-                uuid = resolveVisiblePlayerUuid(visiblePlayerUuids, member.nickname());
-            }
             if (uuid == null) {
                 continue;
             }
@@ -158,49 +154,21 @@ public final class PartyHealthCache {
         }
 
         Map<String, UUID> result = new HashMap<>();
-        for (AbstractClientPlayer player : mc.level.players()) {
-            rememberPlayerName(result, player.getName(), player.getUUID());
-            rememberPlayerName(result, Component.literal(player.getGameProfile().name()), player.getUUID());
-            rememberPlayerName(result, Component.literal(player.getScoreboardName()), player.getUUID());
-            rememberPlayerName(result, player.getCustomName(), player.getUUID());
-        }
+        for (AbstractClientPlayer player : mc.level.players())
+            rememberAccount(result, player.getGameProfile().name(), player.getUUID());
         return result;
     }
 
-    private static void rememberPlayerName(Map<String, UUID> result, Component name, UUID uuid) {
-        if (name == null || uuid == null) {
-            return;
-        }
-
-        String normalized = normalizeName(name.getString());
-        if (!normalized.isBlank()) {
-            result.put(normalized, uuid);
-        }
+    static void rememberAccount(Map<String, UUID> result, String account, UUID uuid) {
+        if (PacketNameResolver.validUsername(account) != null && uuid != null)
+            result.merge(normalizeName(account), uuid, (a, b) -> a.equals(b) ? a : CONFLICT);
     }
 
-    private static UUID resolveVisiblePlayerUuid(Map<String, UUID> visiblePlayerUuids, String username) {
-        String key = normalizeName(username);
-        if (key.isBlank()) {
-            return null;
-        }
+    private static final UUID CONFLICT = new UUID(0, 0);
 
-        UUID exactMatch = visiblePlayerUuids.get(key);
-        if (exactMatch != null) {
-            return exactMatch;
-        }
-
-        UUID prefixMatch = null;
-        for (Map.Entry<String, UUID> entry : visiblePlayerUuids.entrySet()) {
-            if (!entry.getKey().startsWith(key)) {
-                continue;
-            }
-            if (prefixMatch != null && !prefixMatch.equals(entry.getValue())) {
-                return null;
-            }
-            prefixMatch = entry.getValue();
-        }
-
-        return prefixMatch;
+    static UUID resolveVisiblePlayerUuid(Map<String, UUID> visiblePlayerUuids, String username) {
+        UUID uuid = visiblePlayerUuids.get(normalizeName(username));
+        return CONFLICT.equals(uuid) ? null : uuid;
     }
 
     private static String normalizeName(String name) {

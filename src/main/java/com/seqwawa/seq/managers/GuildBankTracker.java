@@ -95,7 +95,14 @@ public final class GuildBankTracker {
             return null;
         }
 
-        String resolvedPlayer = ChatManager.resolvePacketUsername(message, parsed.player());
+        PacketNameResolver resolver = PacketNameResolver.from(message);
+        String cleaned = stripGuildChatPrefix(resolver.text().trim());
+        Matcher actor = GUILD_BANK_PATTERN.matcher(cleaned);
+        if (!actor.matches()) actor = GUILD_WITHOUT_TIER_PATTERN.matcher(cleaned);
+        if (!actor.matches()) return null;
+        int offset = resolver.text().indexOf(cleaned);
+        String resolvedPlayer = resolver.resolve(actor.start(1) + offset, actor.end(1) + offset,
+                PacketNameResolver.Policy.CHAT, "bank.actor").username();
         if (resolvedPlayer == null) {
             SeqClient.LOGGER.warn(
                     "[GuildBank] Dropping guild-bank message: no real username for displayed player '{}'",

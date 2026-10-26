@@ -13,9 +13,11 @@ import com.seqwawa.seq.LightRoomTnaRange.LightRoom;
 import lombok.Getter;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientWorldEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
@@ -47,6 +49,8 @@ import com.seqwawa.seq.managers.IngredientGuideManager;
 import com.seqwawa.seq.managers.LeaderboardBadgeService;
 import com.seqwawa.seq.managers.MinecraftWarTowerTracker;
 import com.seqwawa.seq.managers.RankProfileRoster;
+import com.seqwawa.seq.managers.SequoiaGuildMembership;
+import com.seqwawa.seq.managers.NicknameResolverCache;
 import com.seqwawa.seq.managers.PartyHealthCache;
 import com.seqwawa.seq.managers.PartyFinderManager;
 import com.seqwawa.seq.managers.PrincessMode;
@@ -70,6 +74,7 @@ import com.seqwawa.seq.network.WynncraftServerPolicy;
 import com.seqwawa.seq.network.auth.MinecraftAuthService;
 import com.seqwawa.seq.network.auth.RaidProfilesSession;
 import com.seqwawa.seq.network.auth.StoredAuthSession;
+import com.seqwawa.seq.network.auth.UnlinkedAccountWarning;
 import com.seqwawa.seq.radiance.RadianceCheckerClient;
 import com.seqwawa.seq.raids.tna.TnaLineupHelper;
 import com.seqwawa.seq.raids.tna.TnaSahurSoundDetector;
@@ -298,6 +303,7 @@ public class SeqClient implements ClientModInitializer {
 
     @Getter
     public static Setting.BooleanSetting notifyTrackedWorldEventsSetting;
+    public static Setting.BooleanSetting collectWorldEventLootSetting;
 
     @Getter
     public static Setting.BooleanSetting warPlannerResourceColorsSetting;
@@ -427,10 +433,14 @@ public class SeqClient implements ClientModInitializer {
         CraftedScrollRangeVisualiserClient.initialize();
         IngredientWaypointRenderer.initialize();
         TnaLineupHelper.initialize();
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> NicknameResolverCache.reset());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> NicknameResolverCache.reset());
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
             GlobalSoundListener.shutdown();
             MinecraftUiRenderer.shutdown();
         });
+        ClientPlayConnectionEvents.DISCONNECT.register(
+                (handler, client) -> UnlinkedAccountWarning.getInstance().reset());
         GearSharingProtectionManager gearSharingProtectionManager = new GearSharingProtectionManager();
         ClientWorldEvents.AFTER_CLIENT_WORLD_CHANGE.register((client, world) -> {
             gearSharingProtectionManager.onWorldChange(
@@ -497,7 +507,13 @@ public class SeqClient implements ClientModInitializer {
             String currentHost = WynncraftServerPolicy.currentNormalizedHost();
             WynncraftServerPolicy.Scope previousServerScope = lastServerScope;
             logServerScopeChange(serverScope, currentHost);
+            if (previousServerScope == WynncraftServerPolicy.Scope.MAIN
+                    && serverScope != WynncraftServerPolicy.Scope.MAIN) {
+                SequoiaGuildMembership.getInstance().reset();
+                NicknameResolverCache.reset();
+            }
             boolean minecraftAccountChanged = handleMinecraftAccountChange();
+            com.seqwawa.seq.managers.WorldEventLootTracker.getInstance().tick(client);
             if (worldEventManager != null) {
                 worldEventManager.tick(
                         client,
@@ -573,6 +589,9 @@ public class SeqClient implements ClientModInitializer {
             }
             // One poll feeds both the badge and the rank indexes.
             RankProfileRoster.getInstance().tick();
+            if (showDiscordRanksSetting != null && showDiscordRanksSetting.getValue()) {
+                SequoiaGuildMembership.getInstance().tick();
+            }
             if (seqBadgeNametagRenderer != null) {
                 seqBadgeNametagRenderer.tick();
             }
@@ -642,6 +661,8 @@ public class SeqClient implements ClientModInitializer {
         }
         RaidPartySnapshotTracker.reset();
         GuildPresenceManager.getInstance().reset();
+        SequoiaGuildMembership.getInstance().reset();
+        NicknameResolverCache.reset();
         // Its token speaks for the previous account, so a save would land on their profile.
         RaidProfilesSession.getInstance().clear();
         GuildRaidProgressService.getInstance().reset();
@@ -1079,6 +1100,12 @@ public class SeqClient implements ClientModInitializer {
         showPartyHealthBarsSetting = new Setting.BooleanSetting("show_party_healthbars", "raids", true);
         notifyTrackedWorldEventsSetting =
                 new Setting.BooleanSetting("notify_tracked_world_events", "world_events", false);
+        collectWorldEventLootSetting =
+                new Setting.BooleanSetting("collect_world_event_loot", "world_events", true);
+        collectWorldEventLootSetting.setPresentation(
+                "Collect world event rewards",
+                "Share event reward chest contents with Sequoia to measure observed drop rates.",
+                null);
         warPlannerResourceColorsSetting =
                 new Setting.BooleanSetting("resource_colors", "war_planner", false);
         warPlannerShowPlayersSetting =
@@ -1227,6 +1254,7 @@ public class SeqClient implements ClientModInitializer {
         getConfigManager().register(showNametagRanksSetting);
         getConfigManager().register(showPartyHealthBarsSetting);
         getConfigManager().register(notifyTrackedWorldEventsSetting);
+        getConfigManager().register(collectWorldEventLootSetting);
         getConfigManager().register(warPlannerResourceColorsSetting);
         getConfigManager().register(warPlannerShowPlayersSetting);
         getConfigManager().register(warPlannerBackgroundOpacitySetting);

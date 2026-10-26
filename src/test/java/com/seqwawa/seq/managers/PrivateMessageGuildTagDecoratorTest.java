@@ -16,6 +16,15 @@ class PrivateMessageGuildTagDecoratorTest {
     private static final String ARROW = " \uE003 ";
 
     @Test
+    void inheritedRootIdentityCannotReplaceTheRemoteAccount() {
+        Component message = Component.empty().withStyle(Style.EMPTY.withInsertion("RaidKeeper"))
+                .append(MARKER).append(Component.literal("nunot").withStyle(Style.EMPTY.withInsertion("nunot")))
+                .append(ARROW).append("GaztheCat: hello");
+        var parsed = PrivateMessageGuildTagDecorator.parse(message, "nunot");
+        assertEquals("GaztheCat", parsed.username);
+    }
+
+    @Test
     void reusesParsedDecorationUntilTheTagChangesAndCanRemoveIt() {
         Component message = Component.literal(MARKER + "Baptiste" + ARROW + "You: hello");
         var parsed = PrivateMessageGuildTagDecorator.parse(message, "LocalPlayer");

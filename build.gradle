@@ -136,6 +136,9 @@ dependencies {
 
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
+    if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
+        jvmArgs '-XstartOnFirstThread'
+    }
 }
 
 // Decoder helpers come from native/build-native.py, never from tracked binaries.

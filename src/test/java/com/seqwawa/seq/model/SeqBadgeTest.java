@@ -98,4 +98,23 @@ class SeqBadgeTest {
         assertTrue(serialized.has("display_colors"), "new payloads must use the backend contract name");
     }
 
+    @Test
+    void supportsOnlyTheUntieredTccVariant() {
+        assertEquals("seq:textures/badges/tcc.png",
+                new SeqBadge(SeqBadgeType.TCC, SeqBadgeTier.SINGLE).textureId().toString());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new SeqBadge(SeqBadgeType.TCC, SeqBadgeTier.GOLD));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new SeqBadge(SeqBadgeType.WTP, SeqBadgeTier.SINGLE));
+        assertNull(SeqBadge.parseLegacy("TCC_GOLD"));
+        assertNull(SeqBadge.parseLegacy("NOL_SINGLE"));
+        assertEquals(List.of(SeqBadgeType.WTP, SeqBadgeType.NOL, SeqBadgeType.TCC, SeqBadgeType.INSIGNIA),
+                SeqBadge.sortForRender(List.of(
+                        new SeqBadge(SeqBadgeType.INSIGNIA, SeqBadgeTier.GOLD),
+                        new SeqBadge(SeqBadgeType.TCC, SeqBadgeTier.SINGLE),
+                        new SeqBadge(SeqBadgeType.NOL, SeqBadgeTier.GOLD),
+                        new SeqBadge(SeqBadgeType.WTP, SeqBadgeTier.GOLD)))
+                        .stream().map(SeqBadge::type).toList());
+    }
+
 }

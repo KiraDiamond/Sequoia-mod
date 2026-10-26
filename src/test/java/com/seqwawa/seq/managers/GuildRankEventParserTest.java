@@ -75,7 +75,7 @@ class GuildRankEventParserTest {
 
     @Test
     void doesNotUseNicknameCachePrefixAsEvidence() {
-        NicknameResolverCache.remember("hardcoremaxxer extra", "UnrelatedPlayer");
+        IdentityTestSupport.remember("hardcoremaxxer extra", "UnrelatedPlayer");
         var event = GuildRankEventParser.parse(Component.literal(
                 "hardcoremaxxer has set NotReyz guild rank from Recruit to Chief"), "Observer");
         assertNull(event.actor().username());
@@ -100,14 +100,14 @@ class GuildRankEventParserTest {
     }
 
     @Test
-    void conflictingMetadataStaysUnresolved() {
+    void identicalDisplaysInDifferentRolesKeepTheirOwnMetadata() {
         Component message = Component.empty()
                 .append(Component.literal("hardcoremaxxer").withStyle(Style.EMPTY.withInsertion("FirstAccount")))
                 .append(Component.literal(" has set "))
                 .append(Component.literal("hardcoremaxxer").withStyle(Style.EMPTY.withInsertion("SecondAccount")))
                 .append(Component.literal(" guild rank from Recruit to Chief"));
         var event = GuildRankEventParser.parse(message, "Observer");
-        assertNull(event.actor().username());
-        assertNull(event.target().username());
+        assertEquals("firstaccount", event.actor().username());
+        assertEquals("secondaccount", event.target().username());
     }
 }

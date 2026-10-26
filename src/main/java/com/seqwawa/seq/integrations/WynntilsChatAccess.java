@@ -6,6 +6,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.GuiMessage;
+import net.minecraft.network.chat.Component;
 
 /** Keeps optional Wynntils classes out of the vanilla chat mixin and guild-tag cache. */
 public final class WynntilsChatAccess {
@@ -34,6 +35,19 @@ public final class WynntilsChatAccess {
 
     public static CompletableFuture<String> lookupGuildTag(String username) {
         return INSTANCE.lookup(username);
+    }
+
+    public static Component revealNickname(Component name, String username) {
+        return INSTANCE.reveal(name, username);
+    }
+
+    Component reveal(Component name, String username) {
+        Bridge integration = resolve();
+        if (integration != null) try {
+            Component revealed = integration.revealNickname(name, username);
+            if (revealed != null) return revealed;
+        } catch (RuntimeException | LinkageError error) { warnOnce(error); }
+        return name;
     }
 
     public static void postAddedLine(GuiMessage message, GuiMessage.Line line) {
@@ -83,6 +97,8 @@ public final class WynntilsChatAccess {
     }
 
     public interface Bridge {
+        default Component revealNickname(Component name, String username) { return name; }
+
         CompletableFuture<String> lookupGuildTag(String username);
 
         void postAddedLine(GuiMessage message, GuiMessage.Line line);
