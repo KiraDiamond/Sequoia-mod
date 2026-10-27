@@ -143,10 +143,9 @@ public class MinecraftAuthService {
                 .requestMinecraftAuthChallenge(apiBaseUrl)
                 .thenApply(MinecraftAuthService::validateChallenge)
                 .thenCompose(challenge -> oneJoinAtATime(() -> CompletableFuture
-                        .supplyAsync(() -> joinServer(challenge), executor)
-                        .thenCompose(username -> ApiClient.getInstance()
-                                .completeMinecraftAuthentication(
-                                        apiBaseUrl, new MinecraftAuthCompleteRequest(challenge.challengeId(), username)))))
+                        .supplyAsync(() -> joinServer(challenge, apiBaseUrl), executor)
+                        .thenCompose(request -> ApiClient.getInstance()
+                                .completeMinecraftAuthentication(apiBaseUrl, request))))
                 .thenApply(response -> toStoredSession(unwrapCompleteResponse(response)))
                 .handle((session, throwable) -> {
                     if (throwable != null) {
@@ -157,6 +156,10 @@ public class MinecraftAuthService {
     }
 
     static MinecraftAuthChallengeResponse validateChallenge(MinecraftAuthChallengeResponse response) {
+        if (response != null && response.proof_version() != MinecraftSessionProof.VERSION) {
+            throw new AuthException(AuthErrorCode.BACKEND_UNAVAILABLE,
+                    "Backend does not support secure Minecraft session authentication.");
+        }
         if (response == null
                 || response.challengeId() == null
                 || response.challengeId().isBlank()
@@ -180,10 +183,10 @@ public class MinecraftAuthService {
                 .supplyAsync(
                         () -> {
                             advanceAuthentication(startedFor, AuthState.JOINING_MINECRAFT_SESSION);
-                            return joinServer(challenge);
+                            return joinServer(challenge, BuildConfig.API_URL);
                         },
                         executor)
-                .thenCompose(username -> completeAuthentication(startedFor, challenge.challengeId(), username));
+                .thenCompose(request -> completeAuthentication(startedFor, request));
     }
 
     /**
@@ -199,11 +202,14 @@ public class MinecraftAuthService {
     }
 
     /** Proves to Mojang that this client owns the account, for the backend to check. */
-    private String joinServer(MinecraftAuthChallengeResponse challenge) {
+    MinecraftAuthCompleteRequest joinServer(MinecraftAuthChallengeResponse challenge, String apiBaseUrl) {
+        validateChallenge(challenge);
         User user = requireLoggedInUser();
         try {
-            resolveSessionService().joinServer(user.getProfileId(), user.getAccessToken(), challenge.serverId());
-            return user.getName();
+            MinecraftSessionProof.Joined proof = MinecraftSessionProof.account(
+                    apiBaseUrl, challenge.challengeId(), challenge.serverId(),
+                    serverId -> resolveSessionService().joinServer(user.getProfileId(), user.getAccessToken(), serverId));
+            return new MinecraftAuthCompleteRequest(challenge.challengeId(), user.getName(), proof.clientNonce());
         } catch (AuthenticationException exception) {
             throw new AuthException(
                     AuthErrorCode.SESSION_JOIN_FAILED,
@@ -214,10 +220,10 @@ public class MinecraftAuthService {
     }
 
     private CompletableFuture<MinecraftAuthCompleteResponse> completeAuthentication(
-            long startedFor, String challengeId, String username) {
+            long startedFor, MinecraftAuthCompleteRequest request) {
         advanceAuthentication(startedFor, AuthState.COMPLETING_BACKEND_AUTH);
         return ApiClient.getInstance()
-                .completeMinecraftAuthentication(new MinecraftAuthCompleteRequest(challengeId, username));
+                .completeMinecraftAuthentication(request);
     }
 
     private synchronized void advanceAuthentication(long startedFor, AuthState nextState) {
@@ -227,7 +233,7 @@ public class MinecraftAuthService {
         setState(nextState, null);
     }
 
-    private User requireLoggedInUser() {
+    User requireLoggedInUser() {
         Minecraft minecraft = resolveMinecraftClient();
         if (minecraft == null || minecraft.getUser() == null) {
             throw new AuthException(AuthErrorCode.PLAYER_NOT_LOGGED_IN, "Minecraft account is not logged in.");
@@ -245,7 +251,7 @@ public class MinecraftAuthService {
         return user;
     }
 
-    private MinecraftSessionService resolveSessionService() {
+    MinecraftSessionService resolveSessionService() {
         Minecraft minecraft = resolveMinecraftClient();
         Services services = minecraft == null ? null : minecraft.services();
         MinecraftSessionService sessionService = services == null ? null : services.sessionService();

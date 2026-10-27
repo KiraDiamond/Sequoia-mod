@@ -1,5 +1,6 @@
 package com.seqwawa.seq.network;
 
+import com.seqwawa.seq.network.auth.MinecraftSessionProof;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -9,34 +10,41 @@ import java.util.regex.Pattern;
 
 /** Proves ownership of the active Minecraft session without exposing its access token. */
 final class TreasurySessionAuthenticator {
-    private static final Pattern NONCE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{16,128}$");
+    private static final Pattern NONCE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{32}$");
 
-    private final SessionJoiner sessionJoiner;
+    private final MinecraftSessionProof.SessionJoiner sessionJoiner;
+    private final String endpoint;
     private final Executor executor;
-    private final Consumer<String> responseSender;
+    private final Consumer<TreasuryAuthResponse> responseSender;
     private final Consumer<Throwable> failureHandler;
 
     private State state = State.WAITING_CHALLENGE;
     private String nonce;
+    private String clientNonce;
+    private long generation;
 
     TreasurySessionAuthenticator(
-            SessionJoiner sessionJoiner,
+            MinecraftSessionProof.SessionJoiner sessionJoiner,
             Executor executor,
-            Consumer<String> responseSender,
-            Consumer<Throwable> failureHandler) {
+            Consumer<TreasuryAuthResponse> responseSender,
+            Consumer<Throwable> failureHandler,
+            String endpoint) {
         this.sessionJoiner = Objects.requireNonNull(sessionJoiner);
+        this.endpoint = Objects.requireNonNull(endpoint);
         this.executor = Objects.requireNonNull(executor);
         this.responseSender = Objects.requireNonNull(responseSender);
         this.failureHandler = Objects.requireNonNull(failureHandler);
     }
 
-    boolean handleChallenge(String challengeNonce) {
+    boolean handleChallenge(String challengeNonce, int proofVersion) {
+        long startedFor;
         IllegalArgumentException invalidNonceFailure = null;
         synchronized (this) {
             if (state != State.WAITING_CHALLENGE) {
                 return false;
             }
-            if (!isValidNonce(challengeNonce)) {
+            startedFor = generation;
+            if (proofVersion != MinecraftSessionProof.VERSION || !isValidNonce(challengeNonce)) {
                 state = State.FAILED;
                 nonce = null;
                 invalidNonceFailure = new IllegalArgumentException(
@@ -52,23 +60,30 @@ final class TreasurySessionAuthenticator {
             return false;
         }
 
-        CompletableFuture.runAsync(() -> {
+        CompletableFuture.supplyAsync(() -> {
+                    synchronized (this) {
+                        if (startedFor != generation || state != State.JOINING_SESSION) {
+                            throw new java.util.concurrent.CancellationException("Authentication was reset.");
+                        }
+                    }
                     try {
-                        sessionJoiner.join(challengeNonce);
+                        return MinecraftSessionProof.treasury(endpoint, challengeNonce, sessionJoiner);
                     } catch (Exception exception) {
                         throw new CompletionException(exception);
                     }
                 }, executor)
-                .whenComplete((ignored, error) -> completeJoin(challengeNonce, error));
+                .whenComplete((proof, error) -> completeJoin(startedFor, challengeNonce, proof, error));
         return true;
     }
 
-    synchronized boolean confirm(String confirmedNonce) {
-        if (state != State.WAITING_BACKEND || !Objects.equals(nonce, confirmedNonce)) {
+    synchronized boolean confirm(String confirmedNonce, String confirmedClientNonce) {
+        if (state != State.WAITING_BACKEND || !Objects.equals(nonce, confirmedNonce)
+                || !Objects.equals(clientNonce, confirmedClientNonce)) {
             return false;
         }
         state = State.AUTHENTICATED;
         nonce = null;
+        clientNonce = null;
         return true;
     }
 
@@ -81,23 +96,26 @@ final class TreasurySessionAuthenticator {
     }
 
     synchronized void reset() {
+        generation++;
         state = State.WAITING_CHALLENGE;
         nonce = null;
+        clientNonce = null;
     }
 
     static boolean isValidNonce(String nonce) {
         return nonce != null && NONCE_PATTERN.matcher(nonce).matches();
     }
 
-    private void completeJoin(String completedNonce, Throwable error) {
+    private void completeJoin(long startedFor, String completedNonce, MinecraftSessionProof.Joined proof, Throwable error) {
         Throwable failure = unwrap(error);
         synchronized (this) {
-            if (state != State.JOINING_SESSION || !Objects.equals(nonce, completedNonce)) {
+            if (startedFor != generation || state != State.JOINING_SESSION || !Objects.equals(nonce, completedNonce)) {
                 return;
             }
             if (failure != null) {
                 state = State.FAILED;
             } else {
+                clientNonce = proof.clientNonce();
                 state = State.WAITING_BACKEND;
             }
         }
@@ -105,7 +123,7 @@ final class TreasurySessionAuthenticator {
         if (failure != null) {
             failureHandler.accept(failure);
         } else {
-            responseSender.accept(completedNonce);
+            responseSender.accept(new TreasuryAuthResponse(completedNonce, proof.clientNonce()));
         }
     }
 
@@ -115,11 +133,6 @@ final class TreasurySessionAuthenticator {
             current = current.getCause();
         }
         return current;
-    }
-
-    @FunctionalInterface
-    interface SessionJoiner {
-        void join(String nonce) throws Exception;
     }
 
     enum State {

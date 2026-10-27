@@ -914,15 +914,21 @@ public class ApiClient {
     /** Completes a challenge on the backend at {@code apiBaseUrl} rather than the main one. */
     public CompletableFuture<MinecraftAuthCompleteResponse> completeMinecraftAuthentication(
             String apiBaseUrl, MinecraftAuthCompleteRequest request) {
-        JsonObject body = new JsonObject();
-        body.addProperty("challenge_id", request.challengeId());
-        body.addProperty("username", request.username());
+        JsonObject body = minecraftAuthCompleteBody(request);
         return postWithFallback(
                 authRequestBaseUrlsFor(apiBaseUrl),
                 "/auth/minecraft/complete",
                 body,
                 MinecraftAuthCompleteResponse.class,
                 false);
+    }
+
+    static JsonObject minecraftAuthCompleteBody(MinecraftAuthCompleteRequest request) {
+        JsonObject body = new JsonObject();
+        body.addProperty("challenge_id", request.challengeId());
+        body.addProperty("username", request.username());
+        body.addProperty("client_nonce", request.client_nonce());
+        return body;
     }
 
     // ── HTTP helpers ──

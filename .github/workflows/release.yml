@@ -50,6 +50,10 @@ jobs:
 
           version_number="${GITHUB_REF_NAME#v}"
           minecraft_version="$(sed -n 's/^minecraft_version=//p' gradle.properties)"
+          if [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != tag ]]; then
+            echo "An annotated tag with explicit release notes is required." >&2
+            exit 1
+          fi
           changelog="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
 
           mapfile -t release_jars < <(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' | sort)
@@ -67,24 +71,23 @@ jobs:
             version_type="beta"
           fi
 
-          generate_release_notes=true
+          generate_release_notes=false
           if [[ "$changelog" == "[no-release-notes]" ]]; then
             changelog=""
             generate_release_notes=false
-          elif [[ -z "$changelog" || "$changelog" == "$GITHUB_REF_NAME" ]]; then
-            changelog="GitHub release notes: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          elif [[ -z "${changelog//[[:space:]]/}" || "$changelog" == "$GITHUB_REF_NAME" ]]; then
+            echo "An annotated tag with explicit release notes is required." >&2
+            exit 1
           fi
 
+          changelog_delimiter="CHANGELOG_$(openssl rand -hex 16)"
           {
             echo "mod_jar=${release_jars[0]}"
             echo "minecraft_version=${minecraft_version}"
             echo "version_number=${version_number}"
             echo "version_type=${version_type}"
             echo "generate_release_notes=${generate_release_notes}"
-            delimiter="changelog_$(openssl rand -hex 16)"
-            echo "changelog<<${delimiter}"
-            echo "${changelog}"
-            echo "${delimiter}"
+            printf 'changelog<<%s\n%s\n%s\n' "$changelog_delimiter" "$changelog" "$changelog_delimiter"
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate SHA-256 files
@@ -101,6 +104,7 @@ jobs:
         with:
           generate_release_notes: ${{ steps.release_metadata.outputs.generate_release_notes == 'true' }}
           fail_on_unmatched_files: true
+          body: ${{ steps.release_metadata.outputs.changelog }}
           files: |
             build/libs/*.jar
             build/libs/*.jar.sha256
@@ -109,10 +113,10 @@ jobs:
       - name: Publish to Modrinth
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-          VERSION_NUMBER: ${{ steps.release_metadata.outputs.version_number }}
-          CHANGELOG: ${{ steps.release_metadata.outputs.changelog }}
-          MINECRAFT_VERSION: ${{ steps.release_metadata.outputs.minecraft_version }}
-          VERSION_TYPE: ${{ steps.release_metadata.outputs.version_type }}
+          MOD_VERSION: ${{ steps.release_metadata.outputs.version_number }}
+          MOD_CHANGELOG: ${{ steps.release_metadata.outputs.changelog }}
+          MOD_MINECRAFT_VERSION: ${{ steps.release_metadata.outputs.minecraft_version }}
+          MOD_VERSION_TYPE: ${{ steps.release_metadata.outputs.version_type }}
           MOD_JAR: ${{ steps.release_metadata.outputs.mod_jar }}
           SOURCE_ARCHIVE: build/corresponding-source/sequoia-images-native-source.zip
         shell: bash
@@ -134,12 +138,12 @@ jobs:
           fi
 
           payload="$(jq -cn \
-            --arg name "Sequoia ${VERSION_NUMBER}" \
-            --arg version_number "${VERSION_NUMBER}" \
-            --arg changelog "${CHANGELOG}" \
+            --arg name "Sequoia ${MOD_VERSION}" \
+            --arg version_number "${MOD_VERSION}" \
+            --arg changelog "${MOD_CHANGELOG}" \
             --arg project_id "${project_id}" \
-            --arg minecraft_version "${MINECRAFT_VERSION}" \
-            --arg version_type "${VERSION_TYPE}" \
+            --arg minecraft_version "${MOD_MINECRAFT_VERSION}" \
+            --arg version_type "${MOD_VERSION_TYPE}" \
             '{
               name: $name,
               version_number: $version_number,
