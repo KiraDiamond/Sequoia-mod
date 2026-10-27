@@ -57,10 +57,34 @@ class DecoderTest {
 
     @Test
     void largeImagesKeepTheirAspectRatio() throws Exception {
-        var actual = ImageDecoder.decode(encode(new BufferedImage(1024, 512, BufferedImage.TYPE_INT_ARGB), "png"));
-        assertEquals(256, actual.width());
-        assertEquals(128, actual.height());
+        var actual = ImageDecoder.decode(encode(new BufferedImage(2048, 512, BufferedImage.TYPE_INT_ARGB), "png"));
+        assertEquals(1024, actual.width());
+        assertEquals(256, actual.height());
         assertEquals(0, actual.frames().getFirst().argb()[0], "transparency survives scaling");
+    }
+
+    @Test
+    void stillImagesKeepFineDetailAboveTheAnimationLimit() throws Exception {
+        var picture = new BufferedImage(768, 2, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < 2; y++)
+            for (int x = 0; x < 768; x++) picture.setRGB(x, y, x % 2 == 0 ? 0xff000000 : 0x80ffffff);
+        var png = ImageDecoder.decode(encode(picture, "png"));
+        assertEquals(768, png.width());
+        assertEquals(2, png.height());
+        assertArrayEquals(picture.getRGB(0, 0, 768, 2, null, 0, 768), png.frames().getFirst().argb());
+        var webp = ImageDecoder.decode(resource("/webp-detail.webp"));
+        assertEquals(768, webp.width());
+        assertEquals(2, webp.height());
+        assertArrayEquals(picture.getRGB(0, 0, 768, 2, null, 0, 768), webp.frames().getFirst().argb());
+        var concatenated = new ByteArrayOutputStream();
+        concatenated.write(encode(picture, "png"));
+        concatenated.write(encode(picture, "png"));
+        assertThrows(IOException.class, () -> ImageDecoder.decode(concatenated.toByteArray()));
+        var jpeg = ImageDecoder.decode(encode(new BufferedImage(768, 2, BufferedImage.TYPE_INT_RGB), "jpeg"));
+        assertEquals(768, jpeg.width());
+        assertEquals(2, jpeg.height());
+        var gif = ImageDecoder.decode(encode(picture, "gif"));
+        assertEquals(256, gif.width(), "even single-frame GIFs retain animation bounds");
     }
 
     @Test

@@ -93,7 +93,8 @@ class MediaFramesTest {
                 writer.add(argbFrame(0), 20);
                 assertThrows(IOException.class, () -> writer.add(argbFrame(1), 20), "extra frame");
             }
-            assertThrows(IOException.class, () -> new MediaFrames.Writer(257, 1, 1, lease));
+            assertThrows(IOException.class, () -> new MediaFrames.Writer(1025, 1, 1, lease));
+            assertThrows(IOException.class, () -> new MediaFrames.Writer(257, 1, 2, lease));
             assertThrows(IOException.class, () -> new MediaFrames.Writer(256, 256, 400, lease));
         }
     }

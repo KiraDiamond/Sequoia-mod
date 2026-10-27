@@ -52,6 +52,10 @@ class DecodedFramesTest {
             assertEquals(0, budget.used(), "nothing may be reserved for an invalid header");
         }
         for (int[] values : new int[][] {
+            {MAGIC, 1025, 1, 1},
+            {MAGIC, 1, 1025, 1},
+            {MAGIC, 257, 1, 2}, // extra resolution is never allowed for multiple frames
+            {MAGIC, 1, 257, 2},
             {MAGIC, 256, 256, 400}, // over the pixel budget
             {MAGIC + 1, 1, 1, 1, 20, 0},
             {MAGIC, 1, 1, 1, 0, 0}, // zero duration
@@ -59,5 +63,32 @@ class DecodedFramesTest {
             {MAGIC, 1, 1, 1, 20, 0xff123456, 0} // trailing data
         }) assertThrows(IOException.class, () -> read(stream(values), budget));
         assertEquals(0, budget.used(), "a rejected stream must release everything it reserved");
+    }
+
+    @Test
+    void highResolutionStillFitsTheExistingBudgets() throws Exception {
+        var budget = new ByteBudget(PreviewCache.IN_FLIGHT_BYTES);
+        byte[] pixels = new byte[1024 * 1024 * 4];
+        try (var lease = budget.open(); var writer = new MediaFrames.Writer(1024, 1024, 1, lease)) {
+            writer.add(pixels, 100);
+            var media = writer.finish();
+            try (var reader = media.reader()) {
+                assertEquals(pixels.length, reader.next().length);
+            }
+            var atlas = FrameAtlas.of(1024, 1024, 1, 4096);
+            assertEquals(4L * 1024 * 1024, atlas.bytes());
+        }
+        assertEquals(0, budget.used());
+        var encoded = new ByteArrayOutputStream();
+        try (var output = new DataOutputStream(encoded)) {
+            for (int value : new int[] {MAGIC, 1024, 1024, 1, 100}) output.writeInt(value);
+            output.write(pixels);
+        }
+        try (var lease = budget.open()) {
+            var media = DecodedFrames.read(new ByteArrayInputStream(encoded.toByteArray()), lease, first -> {});
+            assertEquals(1024, media.width());
+            assertEquals(1024, media.height());
+        }
+        assertEquals(0, budget.used(), "the stream reader's additional pixel buffer is also released");
     }
 }

@@ -15,6 +15,7 @@ a musl C compiler.
 """
 import argparse, hashlib, json, os, pathlib, platform, shutil, socket, struct, subprocess, sys
 import tempfile, time
+import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CRATE = ROOT / "native/decoder"
@@ -173,14 +174,29 @@ def verify():
         assert code == 0, err
         assert hashlib.sha256(pixels).hexdigest() == EXPECTED_PIXELS, ("unexpected pixels", len(pixels))
         assert decode(scratch, media, prepared=True)[:2] == (0, pixels), "prepared helper decoded differently"
+        # Fine one-pixel stripes must survive above the animation resolution, including alpha.
+        def png_chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        row = bytes([0, 0, 0, 255, 255, 255, 255, 128]) * 384
+        png = (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">2I5B", 768, 2, 8, 6, 0, 0, 0))
+               + png_chunk(b"IDAT", zlib.compress((b"\0" + row) * 2)) + png_chunk(b"IEND", b""))
+        code, pixels, err = decode(scratch, png)
+        assert code == 0, err
+        assert struct.unpack(">4I", pixels[:16]) == (0x53494D31, 768, 2, 1)
+        assert pixels[20:] == struct.pack(">2I", 0xff000000, 0x80ffffff) * 768
+        code, pixels, err = decode(scratch, png + png)
+        assert code != 0 and not pixels, "multiple still-image frames accepted"
         code, out, err = decode(scratch, b"bad")
         assert code != 0 and not out, (code, len(out))
-        for name, dimensions in (("lossless", (2, 2, 1)), ("lossy", (8, 8, 1)), ("animated", (8, 8, 3))):
+        for name, dimensions in (("lossless", (2, 2, 1)), ("lossy", (8, 8, 1)), ("animated", (8, 8, 3)),
+                                 ("detail", (768, 2, 1))):
             code, pixels, err = decode(scratch, (FIXTURE.parent / f"webp-{name}.webp").read_bytes())
             assert code == 0, (name, err)
             assert struct.unpack(">4I", pixels[:16]) == (0x53494D31, *dimensions), name
             if name == "lossless":
                 assert pixels[20:] == struct.pack(">4I", 0xffff0000, 0x8000ff00, 0xff0000ff, 0), name
+            if name == "detail":
+                assert pixels[20:] == struct.pack(">2I", 0xff000000, 0x80ffffff) * 768, name
             if name == "animated":
                 stride = 4 + 8 * 8 * 4
                 assert [struct.unpack_from(">I", pixels, 16 + i * stride)[0] for i in range(3)] == [100, 200, 300]

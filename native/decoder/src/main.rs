@@ -116,9 +116,10 @@ fn validate(bytes: &[u8]) -> wasmtime::Result<()> {
         "invalid pixel header"
     );
     let (width, height, frames) = (word(4), word(8), word(12));
+    let max_side = if frames == 1 { 1024 } else { 256 };
     ensure!(
-        (1..=256).contains(&width)
-            && (1..=256).contains(&height)
+        (1..=max_side).contains(&width)
+            && (1..=max_side).contains(&height)
             && (1..=400).contains(&frames)
             && width * height * frames <= 12_000_000,
         "invalid pixel bounds"
@@ -288,6 +289,27 @@ mod tests {
         assert!(validate(&bytes).is_ok());
         bytes.push(0);
         assert!(validate(&bytes).is_err());
+    }
+
+    #[test]
+    fn extra_resolution_is_limited_to_one_frame() {
+        for (width, height, frames, accepted) in [
+            (1024, 512, 1, true),
+            (1025, 1, 1, false),
+            (1, 1025, 1, false),
+            (257, 1, 2, false),
+            (1, 257, 2, false),
+        ] {
+            let mut bytes = Vec::new();
+            for value in [MAGIC, width, height, frames] {
+                bytes.extend(value.to_be_bytes());
+            }
+            for _ in 0..frames {
+                bytes.extend(20_u32.to_be_bytes());
+                bytes.resize(bytes.len() + width as usize * height as usize * 4, 0);
+            }
+            assert_eq!(validate(&bytes).is_ok(), accepted);
+        }
     }
 
     /// Also proves the embedded artifact matches `config()`.

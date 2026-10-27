@@ -10,16 +10,18 @@ import java.util.function.Consumer;
 final class DecodedFrames {
     static final int MAGIC = 0x53494D31;
     static final int MAX_SIDE = 256;
+    static final int MAX_STILL_SIDE = 1024;
     static final int MAX_FRAMES = 400;
     static final long MAX_PIXELS = 12_000_000;
 
     private DecodedFrames() {}
 
     static void validate(int w, int h, int count) throws IOException {
+        int maxSide = count == 1 ? MAX_STILL_SIDE : MAX_SIDE;
         if (w < 1
                 || h < 1
-                || w > MAX_SIDE
-                || h > MAX_SIDE
+                || w > maxSide
+                || h > maxSide
                 || count < 1
                 || count > MAX_FRAMES
                 || (long) w * h * count > MAX_PIXELS) throw new IOException("Invalid decoded preview dimensions");

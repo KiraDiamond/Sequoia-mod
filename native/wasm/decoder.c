@@ -9,6 +9,7 @@
 #define MAX_OUTPUT 48001616u
 static uint8_t *output;
 static uint32_t outlen, count, width, height;
+static int still_image;
 static uint64_t source_work;
 static int64_t previous_pts=AV_NOPTS_VALUE;
 static uint32_t last_offset;
@@ -41,10 +42,11 @@ static int dimensions(int w,int h) {
 static int emit(AVFrame *frame,AVStream *stream,struct SwsContext **scale) {
  if(!dimensions(frame->width,frame->height))return -1;
  source_work+=(uint64_t)frame->width*frame->height;
- if(source_work>200000000 || ++count>400)return -1;
+ if(source_work>200000000 || ++count>400 || (still_image && count>1))return -1;
  int longest=frame->width>frame->height?frame->width:frame->height;
- uint32_t w=longest<=256?frame->width:(frame->width*256+longest/2)/longest;
- uint32_t h=longest<=256?frame->height:(frame->height*256+longest/2)/longest;
+ int side=still_image?1024:256;
+ uint32_t w=longest<=side?frame->width:(frame->width*side+longest/2)/longest;
+ uint32_t h=longest<=side?frame->height:(frame->height*side+longest/2)/longest;
  if(!w)w=1;if(!h)h=1;
  if(count==1){width=w;height=h;}else if(w!=width||h!=height)return -1;
  if((uint64_t)w*h*count>12000000)return -1;
@@ -87,6 +89,8 @@ __attribute__((export_name("decode_media"))) int decode_media(uint8_t *data,int 
  }
  else if(length>=12 && !memcmp(data+4,"ftyp",4))name="mov";
  else return -1;
+ // Only fixed still-image demuxers get extra detail; animations retain their original bounds.
+ still_image=!strcmp(name,"png_pipe")||!strcmp(name,"jpeg_pipe")||!strcmp(name,"webp_pipe");
  av_log_set_callback(no_log);av_max_alloc(64*1024*1024);
  Input input={data,length,0};
  AVFormatContext *format=avformat_alloc_context();

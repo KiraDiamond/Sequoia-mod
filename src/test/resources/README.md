@@ -9,3 +9,6 @@ The `webp-*.webp` fixtures are generated with Pillow 12.0.0: a 2x2 lossless RGBA
 (red, half-transparent green, blue, transparent black), an 8x8 lossy red image, an 8x8
 lossless animation (red, right half blue, bottom half green; 100/200/300 ms), and a
 4097x1 red image that must be rejected by the existing dimension limit.
+`webp-detail.webp` is a 768x2 lossless RGBA image of alternating opaque black and
+half-transparent white columns, generated with Pillow 12.0.0 using `lossless=True, exact=True`.
+It verifies fine detail and alpha survive above the animation resolution.

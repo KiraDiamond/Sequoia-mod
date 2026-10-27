@@ -7,7 +7,7 @@ import java.io.IOException;
  *
  * <p>The decoder's bounds (sides of at most 256, at most 400 frames and 12 million pixels)
  * keep every valid animation within a 4096 by 3332 grid, so one texture always suffices on
- * hardware that supports 4096-pixel textures.
+ * hardware that supports 4096-pixel textures. A single still frame may be up to 1024 pixels per side.
  */
 record FrameAtlas(int frameWidth, int frameHeight, int columns, int width, int height) {
     static final int MAX_SIDE = 4096;

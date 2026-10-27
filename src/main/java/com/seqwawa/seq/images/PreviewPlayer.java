@@ -38,7 +38,7 @@ final class PreviewPlayer implements AutoCloseable {
         this.frames = frames;
         this.atlas = atlas;
         id = Identifier.fromNamespaceAndPath("seq", "image_preview_" + textureCounter++);
-        texture = new AtlasTexture(atlas);
+        texture = new AtlasTexture(atlas, frames.frameCount() == 1);
         Minecraft.getInstance().getTextureManager().register(id, texture);
         var reader = frames.reader();
         try {
@@ -178,7 +178,7 @@ final class PreviewPlayer implements AutoCloseable {
 
     /** RGBA texture written frame by frame; unlike DynamicTexture it keeps no CPU copy. */
     private static final class AtlasTexture extends AbstractTexture {
-        AtlasTexture(FrameAtlas atlas) {
+        AtlasTexture(FrameAtlas atlas, boolean stillImage) {
             var device = RenderSystem.getDevice();
             texture = device.createTexture(
                     () -> "Sequoia image preview",
@@ -188,7 +188,8 @@ final class PreviewPlayer implements AutoCloseable {
                     atlas.height(),
                     1,
                     1);
-            sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
+            // Single-frame textures have no neighboring frames for linear sampling to bleed into.
+            sampler = RenderSystem.getSamplerCache().getClampToEdge(stillImage ? FilterMode.LINEAR : FilterMode.NEAREST);
             textureView = device.createTextureView(texture);
         }
     }
