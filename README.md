@@ -395,7 +395,8 @@ scales. GIFs, MP4s and animated WebP retain the 256-pixel animation limit; all p
 the existing total pixel, memory and sandbox budgets.
 
 - **Sources:** HTTPS GIF, PNG, JPEG and WebP links from Discord, Tenor, Giphy, Imgur and Klipy, plus Klipy's MP4
-  renditions of GIFs.
+  renditions of GIFs. FxTwitter GIFs are supported only as direct
+  `https://gif.fxtwitter.com/tweet_video/<id>.gif` or `.webp` links without query parameters.
 - **Privacy:** previews are fetched only from those hosts, which see your IP address as a browser would.
   Other hosts, redirects off the list, private addresses, bodies over 8 MiB and downloads over 20 seconds
   are refused.

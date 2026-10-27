@@ -60,6 +60,22 @@ class PublicDnsTest {
     }
 
     @Test
+    void fxTwitterHostUsesTheSamePublicAddressChecks() throws Exception {
+        var publicAnswer = new InetAddress[] {InetAddress.getByName("1.1.1.1")};
+        assertArrayEquals(publicAnswer,
+                new PublicDns(deadline(2_000), host -> publicAnswer).resolve("gif.fxtwitter.com"));
+        var privateAnswer = new InetAddress[] {InetAddress.getByName("127.0.0.1")};
+        assertThrows(UnknownHostException.class, () ->
+                new PublicDns(deadline(2_000), host -> privateAnswer).resolve("gif.fxtwitter.com"));
+        for (String host : List.of("fxtwitter.com", "video.fxtwitter.com", "gif.fxtwitter.com.evil.test",
+                "gif.fxtwitter.com/tweet_video/a.webp", "user@gif.fxtwitter.com"))
+            assertThrows(UnknownHostException.class, () ->
+                    new PublicDns(deadline(2_000), unexpected -> {
+                        throw new AssertionError("unapproved host reached DNS");
+                    }).resolve(host), host);
+    }
+
+    @Test
     void stalledResolverIsBoundedByTheDownloadDeadline() throws Exception {
         var answer = new InetAddress[] {InetAddress.getByName("1.1.1.1")};
         assertArrayEquals(answer, new PublicDns(deadline(2_000), host -> answer).resolve("i.imgur.com"));

@@ -10,6 +10,8 @@ import java.util.regex.Pattern;
 /** Recognizes chat links to media on allowlisted hosts. */
 final class MediaLinks {
     private static final Pattern URL = Pattern.compile("https?://[^\\s<>\"\\[\\]]+");
+    private static final String FX_GIF_HOST = "gif.fxtwitter.com";
+    private static final Pattern FX_GIF_PATH = Pattern.compile("/tweet_video/[A-Za-z0-9_-]{1,128}\\.(?:gif|webp)");
     private static final Set<String> HOSTS = Set.of(
             "cdn.discordapp.com",
             "media.discordapp.net",
@@ -26,6 +28,7 @@ final class MediaLinks {
             "media4.giphy.com",
             "i.giphy.com",
             "i.imgur.com",
+            FX_GIF_HOST,
             "klipy.com",
             "www.klipy.com",
             "static.klipy.com");
@@ -75,9 +78,22 @@ final class MediaLinks {
                 && uri.getPath().chars().noneMatch(c -> c < 32 || c == 127)
                 && (uri.getQuery() == null || uri.getQuery().chars().noneMatch(c -> c < 32 || c == 127))
                 && "https".equalsIgnoreCase(uri.getScheme())
-                && HOSTS.contains(host(uri))
+                && allowedHost(uri.getHost())
                 && uri.getUserInfo() == null
-                && (uri.getPort() == -1 || uri.getPort() == 443);
+                && (uri.getPort() == -1 || uri.getPort() == 443)
+                && (!host(uri).equals(FX_GIF_HOST) || isFxGif(uri));
+    }
+
+    /** DNS checks the exact host; requests and redirects additionally check endpoint restrictions. */
+    static boolean allowedHost(String host) {
+        return host != null && HOSTS.contains(host.toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isFxGif(URI uri) {
+        return host(uri).equals(FX_GIF_HOST)
+                && uri.getRawQuery() == null
+                && uri.getRawPath() != null
+                && FX_GIF_PATH.matcher(uri.getRawPath()).matches();
     }
 
     /** Whether the link is shown as a GIF rather than a still image. */
@@ -85,7 +101,8 @@ final class MediaLinks {
         return uri.getPath().toLowerCase(Locale.ROOT).endsWith(".gif")
                 || isTenorPage(uri)
                 || isKlipyPage(uri)
-                || isKlipyVideo(uri);
+                || isKlipyVideo(uri)
+                || isFxGif(uri);
     }
 
     static boolean isKlipyVideo(URI uri) {

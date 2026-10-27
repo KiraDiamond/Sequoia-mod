@@ -70,7 +70,7 @@ public final class ImagePreviews {
         URI uri = MediaLinks.imageUri(StringArgumentType.getString(context, "url"));
         if (uri == null) {
             context.getSource()
-                    .sendError(Component.literal("Use a Discord, Klipy, Tenor, Giphy or Imgur GIF/PNG/JPEG/WebP link."));
+                    .sendError(Component.literal("Use a supported Discord, Klipy, Tenor, Giphy, Imgur or FxTwitter media link."));
             return 0;
         }
         context.getSource().sendFeedback(decorate(Component.literal(uri.toString())));

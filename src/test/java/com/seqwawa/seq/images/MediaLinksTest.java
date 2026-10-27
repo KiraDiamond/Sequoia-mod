@@ -11,6 +11,39 @@ import org.junit.jupiter.api.Test;
 
 class MediaLinksTest {
     @Test
+    void fxTwitterAllowsOnlyDirectGifConversionEndpoints() {
+        for (String url : List.of(
+                "https://gif.fxtwitter.com/tweet_video/HNfKdlnWkAAiO5j.webp",
+                "https://GIF.FXTWITTER.COM:443/tweet_video/abc_123-xyz.gif")) {
+            assertEquals(URI.create(url), MediaLinks.imageUri(url));
+            assertTrue(MediaLinks.isAnimated(URI.create(url)), "converted WebP is labelled as a GIF");
+        }
+        for (String url : List.of(
+                "http://gif.fxtwitter.com/tweet_video/a.webp",
+                "https://fxtwitter.com/tweet_video/a.webp",
+                "https://video.fxtwitter.com/tweet_video/a.webp",
+                "https://gif.fxtwitter.com.evil.test/tweet_video/a.webp",
+                "https://evil.gif.fxtwitter.com/tweet_video/a.webp",
+                "https://user@gif.fxtwitter.com/tweet_video/a.webp",
+                "https://gif.fxtwitter.com:444/tweet_video/a.webp",
+                "https://gif.fxtwitter.com/tweet_video/a.webp#fragment",
+                "https://gif.fxtwitter.com/tweet_video/a.webp?url=https://evil.test/a.webp",
+                "https://gif.fxtwitter.com/other/a.webp",
+                "https://gif.fxtwitter.com/tweet_video/nested/a.webp",
+                "https://gif.fxtwitter.com/tweet_video/../a.webp",
+                "https://gif.fxtwitter.com/tweet_video/%2e%2e/a.webp",
+                "https://gif.fxtwitter.com/tweet_video/%61.webp",
+                "https://gif.fxtwitter.com/tweet_video/a%2Fb.webp",
+                "https://gif.fxtwitter.com/tweet_video/a%5Cb.webp",
+                "https://gif.fxtwitter.com/tweet_video/a.png",
+                "https://gif.fxtwitter.com/tweet_video/a.mp4",
+                "https://gif.fxtwitter.com/tweet_video/.webp")) {
+            assertNull(MediaLinks.imageUri(url), url);
+            assertFalse(MediaLinks.allowed(URI.create(url)), "download gate: " + url);
+        }
+    }
+
+    @Test
     void findsMediaLinksAndKeepsTheirQuery() {
         String url =
                 "https://cdn.discordapp.com/attachments/725134391021666366/1556530112252346429/togif.gif?backend=b2";

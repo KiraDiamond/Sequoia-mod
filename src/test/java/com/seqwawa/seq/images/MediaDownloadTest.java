@@ -21,6 +21,39 @@ class MediaDownloadTest {
     }
 
     @Test
+    void fxTwitterEndpointRestrictionsAlsoApplyToRedirects() throws Exception {
+        URI fx = URI.create("https://gif.fxtwitter.com/tweet_video/HNfKdlnWkAAiO5j.webp");
+        byte[] webp;
+        try (var input = getClass().getResourceAsStream("/webp-lossless.webp")) {
+            webp = input.readAllBytes();
+        }
+        assertArrayEquals(webp, MediaDownload.fetch(fx,
+                (uri, limit, end) -> new MediaDownload.Reply(200, null, webp), deadline()));
+        var requests = new ArrayList<URI>();
+        assertArrayEquals(webp, MediaDownload.fetch(GIF, (uri, limit, end) -> {
+            requests.add(uri);
+            return uri.equals(GIF) ? new MediaDownload.Reply(302, fx.toString(), new byte[0])
+                    : new MediaDownload.Reply(200, null, webp);
+        }, deadline()));
+        assertEquals(java.util.List.of(GIF, fx), requests);
+        for (String destination : new String[] {
+            "https://gif.fxtwitter.com/other/a.webp", "/tweet_video/../a.webp",
+            "/tweet_video/%61.webp", "/tweet_video/a.webp?url=https://evil.test/a.webp",
+            "https://gif.fxtwitter.com.evil.test/tweet_video/a.webp", "http://127.0.0.1/a.webp"
+        }) {
+            var calls = new AtomicInteger();
+            assertThrows(IOException.class, () -> MediaDownload.fetch(fx, (uri, limit, end) -> {
+                calls.incrementAndGet();
+                return new MediaDownload.Reply(302, destination, new byte[0]);
+            }, deadline()), destination);
+            assertEquals(1, calls.get(), "blocked redirect must never be requested");
+        }
+        byte[] mp4 = {0, 0, 0, 12, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
+        assertThrows(IOException.class, () -> MediaDownload.fetch(fx,
+                (uri, limit, end) -> new MediaDownload.Reply(200, null, mp4), deadline()));
+    }
+
+    @Test
     void blockedInitialAndRedirectDestinationsAreNeverRequested() {
         var calls = new AtomicInteger();
         MediaDownload.Exchange exchange = (uri, limit, end) -> {

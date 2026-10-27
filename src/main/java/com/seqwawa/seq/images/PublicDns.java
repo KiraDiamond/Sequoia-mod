@@ -44,7 +44,7 @@ final class PublicDns implements DnsResolver {
 
     @Override
     public InetAddress[] resolve(String host) throws UnknownHostException {
-        if (!MediaLinks.allowed(URI.create("https://" + host + "/")))
+        if (!MediaLinks.allowedHost(host))
             throw new UnknownHostException("Unsupported media host");
         Future<InetAddress[]> pending;
         try {
